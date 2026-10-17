@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>Recall Radar</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <h1 class="brand">Recall Radar</h1>
+      <p class="tagline">Ask about recalls. Spoken answers straight from NHTSA, CPSC and the FDA.</p>
+    </header>
+
+    <section class="device" aria-label="Alexa simulator">
+      <div class="ring" id="ring" data-state="idle" aria-hidden="true">
+        <span class="ring__pulse"></span>
+        <span class="ring__halo"></span>
+        <div class="ring__core"></div>
+      </div>
+      <p class="transcript" id="transcript" role="status" aria-live="polite">
+        Ask &ldquo;Is my 2018 Honda Accord recalled?&rdquo;
+      </p>
+    </section>
+
+    <form class="input" id="inputForm" autocomplete="off">
+      <button type="button" id="micButton" class="icon-button" aria-label="Start listening">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+          <path d="M5 10v1a7 7 0 0 0 14 0v-1"></path>
+          <path d="M12 18v4"></path>
+          <path d="M8 22h8"></path>
+        </svg>
+      </button>
+      <input id="textInput" type="text" placeholder="Type a question&hellip;" aria-label="Question" maxlength="200" />
+      <button type="submit" class="icon-button icon-button--send" aria-label="Ask">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 2 11 13"></path>
+          <path d="M22 2 15 22 11 13 2 9z"></path>
+        </svg>
+      </button>
+    </form>
+
+    <div class="chips" id="chips" role="group" aria-label="Example questions"></div>
+
+    <section class="results" id="results" aria-label="Recall results"></section>
+
+    <details class="log" id="logPanel" open>
+      <summary>MCP log</summary>
+      <div class="log__entries" id="logEntries" role="log" aria-label="MCP request log"></div>
+    </details>
+
+    <footer class="footer">
+      Recall Radar by Michael Lip, github.com/theluckystrike. Data: NHTSA, CPSC, FDA. Not affiliated with Amazon.
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

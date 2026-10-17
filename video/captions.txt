@@ -1,0 +1,12 @@
+A typed question goes to the live MCP server.
+Voice: system text-to-speech, simulating Alexa+
+One recall is read in full. The cards show the details.
+Say "more" to hear the next two.
+Every answer is a real MCP tools/call over Streamable HTTP
+Products come from the Consumer Product Safety Commission.
+Food recalls come from FDA enforcement reports.
+Serious recalls start with the word "Important."
+Nothing listed? It still never says a product is safe.
+Medicine answers end with a pharmacist reminder.
+No model year? It asks one short follow-up question.
+Then it checks NHTSA for the 2018 model.
