@@ -1,7 +1,7 @@
 {
   "name": "recall-radar",
   "version": "1.0.0",
-  "description": "",
+  "description": "Ask Alexa+ whether your car, crib, food or medicine was recalled: an MCP server for NHTSA, CPSC and FDA data.",
   "main": "index.js",
   "scripts": {
     "dev": "wrangler dev",
@@ -10,8 +10,8 @@
     "deploy": "wrangler deploy"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Michael Lip (https://github.com/theluckystrike)",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
@@ -23,5 +23,6 @@
     "tsx": "4.23.12",
     "typescript": "5.9.3",
     "wrangler": "4.151.1"
-  }
+  },
+  "repository": "github:theluckystrike/recall-radar"
 }
