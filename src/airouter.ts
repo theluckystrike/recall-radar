@@ -38,6 +38,12 @@ async function takeCall(env: AiEnv): Promise<boolean> {
 
 const str = (v: unknown, max: number) => (typeof v === "string" && v.trim() && v.length <= max ? v.trim().toLowerCase() : null);
 
+function validateVehicle(a: Record<string, unknown>, maxYear: number): RouteResult | null {
+  const year = Number(a.year); const make = str(a.make, 30); const model = str(a.model, 40);
+  const ok = Number.isInteger(year) && year >= 1950 && year <= maxYear && make !== null && model !== null;
+  return ok ? { tool: "check_vehicle_recalls", args: { year, make: make!, model: model! } } : null;
+}
+
 /** Accept only the exact shapes the simulator can execute. */
 export function validate(raw: unknown): RouteResult | null {
   if (!raw || typeof raw !== "object") return null;
@@ -45,10 +51,7 @@ export function validate(raw: unknown): RouteResult | null {
   const a = args ?? {};
   const maxYear = new Date().getUTCFullYear() + 1;
   if (tool === "more") return { tool: "more", args: {} };
-  if (tool === "check_vehicle_recalls") {
-    const year = Number(a.year); const make = str(a.make, 30); const model = str(a.model, 40);
-    return Number.isInteger(year) && year >= 1950 && year <= maxYear && make && model ? { tool, args: { year, make, model } } : null;
-  }
+  if (tool === "check_vehicle_recalls") return validateVehicle(a, maxYear);
   if (tool === "ask_vehicle") {
     const make = str(a.make, 30); const missing = a.missing === "model" ? "model" : "year";
     return make ? { tool, args: { make, model: str(a.model, 40) ?? "", missing } } : null;
