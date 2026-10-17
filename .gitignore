@@ -2,4 +2,6 @@ node_modules/
 .wrangler/
 dist/
 .dev.vars
-video/work/
+video/
+SPEC.md
+SUBMISSION.md
