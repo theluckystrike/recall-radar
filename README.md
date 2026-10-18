@@ -54,6 +54,7 @@ Alexa+ (or any MCP client) --Streamable HTTP--> /mcp on Cloudflare Workers
 
 - The MCP server is `@modelcontextprotocol/server` 2.3.1 over stateless Streamable HTTP. It serves the 2025-11-25 protocol and the 2026-07-28 revision from one server factory.
 - It runs on Cloudflare Workers, with a Durable Object per user for the watch list, a small KV namespace for the routing limit, no API keys and no tracking.
+- Each request runs inside the 300 ms CPU limit set in `wrangler.jsonc`. A source response is reduced to at most 5 recalls, with a 120 character title and 300 character hazard and remedy, so the large CPSC response is parsed well inside that limit.
 - Each source call has a 4-second timeout. CPSC title search is literal, so the server also searches the most distinctive words ("ikea", "malm") in the same parallel round, and keeps only recalls whose title contains those words. "ikea malm dresser" finds the MALM recall, and "uppababy high chair" never returns another brand's high chair.
 - The Agent Skill at `skills/recall-radar/SKILL.md` tells an agent which tool to pick and how to read the answer aloud.
 
@@ -73,7 +74,7 @@ Install the dependencies with `npm install`. Sign in to Cloudflare once with `np
 npm install
 npx wrangler kv namespace create LIMITS
 npx wrangler dev          # http://127.0.0.1:8787
-npx tsx --test test/*.test.ts             # 125 tests, no network
+npx tsx --test test/*.test.ts             # 137 tests, no network
 node test/live-mcp.mjs http://127.0.0.1:8787   # live MCP check against the real sources
 ```
 

@@ -6,8 +6,13 @@ const WORRY = new Set(["safe", "safety", "unsafe", "dangerous", "ok", "okay", "f
   "recall", "recalls", "recalled", "warning", "warnings", "alert", "alerts", "news", "lately", "recently", "please", "my", "the", "a", "an",
   "is", "it", "are", "was", "were", "there", "any", "does", "do", "should", "i", "we", "our", "of", "can", "has", "have", "for", "me"]);
 
+/** "jalapeño" -> "jalapeno": the same NFD and combining-mark strip everywhere an item is read. */
+export function stripAccents(text: string): string {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 export function cleanItem(query: string): string {
-  const words = query.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+  const words = stripAccents(query).toLowerCase()
     .replace(/[^a-z0-9'&\- ]+/g, " ").split(/\s+/).filter(Boolean);
   const kept = words.filter((w) => !WORRY.has(w));
   const cleaned = (kept.length ? kept : words).join(" ").slice(0, 60);

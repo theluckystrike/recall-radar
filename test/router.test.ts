@@ -98,6 +98,12 @@ test("never mind cancels instead of searching", () => {
   for (const u of ["never mind", "nevermind", "cancel", "forget it"]) assert.equal(route(u), null, u);
 });
 
+test("accents are stripped on the search and watch list paths", () => {
+  assert.deepEqual(route("is there a recall on jalapeño peppers")?.args, { query: "jalapeno peppers" });
+  assert.deepEqual(route("add jalapeño peppers to my watch list")?.args, { item: "jalapeno peppers" });
+  assert.deepEqual(route("watch crème brûlée")?.args, { item: "creme brulee" });
+});
+
 test("a generic synonym keeps the brand words the person said", () => {
   assert.deepEqual(route("is my ByHeart formula recalled")?.args, { query: "byheart formula" });
   assert.deepEqual(route("is my Similac baby formula safe")?.args, { query: "similac infant formula" });

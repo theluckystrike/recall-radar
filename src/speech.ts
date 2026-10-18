@@ -16,6 +16,9 @@ const MAX_WORDS_SENTENCE = 26;
 const MAX_WORDS_TITLE = 9;
 const FOLLOW_LIMIT = 4;
 
+/** Every spoken answer goes out with single spaces and no leading or trailing space. */
+const spoken = (text: string) => text.replace(/\s+/g, " ").trim();
+
 function monthYear(date: string): string {
   const [year = "", month = ""] = date.split("-");
   const name = MONTHS[Number(month) - 1];
@@ -128,7 +131,7 @@ function detail(recall: Recall, query = "", subject = ""): string {
   const what = recall.source === "nhtsa" ? `It affects ${spokenTitle(recall)}.` : `It is ${spokenTitle(recall, query)}.`;
   const raw = core(firstSentence(lowerIfShouting(scrub(recall.source, recall.hazard))));
   // FDA reasons are often fragments ("Undeclared milk"): say where the words come from.
-  const hazard = recall.source.startsWith("fda") && raw.split(" ").length < 6 ? `The FDA says the reason is ${raw}` : raw;
+  const hazard = recall.source.startsWith("fda") && raw && raw.split(" ").length < 6 ? `The FDA says the reason is ${raw}` : raw;
   const pharmacist = recall.source === "fda-drug" ? "Ask a pharmacist before you stop taking a medicine." : "";
   const remedyText = core(firstSentence(scrub(recall.source, recall.remedy)));
   const plain = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -171,7 +174,7 @@ export function followUps(recalls: Recall[]): string[] {
   return recalls.slice(1, 1 + FOLLOW_LIMIT).map((r) => {
     const what = r.source === "nhtsa" ? spokenTitle(r) : spokenTitle(r);
     const why = core(firstSentence(lowerIfShouting(scrub(r.source, r.hazard))));
-    const line = `From ${monthYear(r.date)}: ${tidy(what)}. ${why}`.replace(/\s+(in|of|and|the|with|for|to|from)\.$/i, ".").trim();
+    const line = spoken(`From ${monthYear(r.date)}: ${tidy(what)}. ${why}`.replace(/\s+(in|of|and|the|with|for|to|from)\.$/i, "."));
     return line.split(" ").length > 35 ? `${line.split(" ").slice(0, 35).join(" ").replace(/[\s,;:-]+$/, "")}.` : line;
   });
 }
@@ -179,12 +182,12 @@ export function followUps(recalls: Recall[]): string[] {
 export function speak(result: SearchResult): string {
   const first = result.recalls[0];
   if (result.total <= 0 || !first) {
-    return `I found no recalls for ${spokenQuery(result.query)} in ${SOURCE_NAMES[result.source]}. That does not prove it is safe, only that nothing is listed.`;
+    return spoken(`I found no recalls for ${spokenQuery(result.query)} in ${SOURCE_NAMES[result.source]}. That does not prove it is safe, only that nothing is listed.`);
   }
   const matched = /\(matched by /.test(result.query);
   const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${result.query}.`
     : `I found ${count(result.total, "recall")} ${matched ? "matching" : mention(result.total)} ${spokenQuery(result.query)}.`;
-  return fit(lead, first, others(result.total, result.recalls.length), spokenQuery(result.query));
+  return spoken(fit(lead, first, others(result.total, result.recalls.length), spokenQuery(result.query)));
 }
 
 export interface WatchSpeech {
@@ -207,29 +210,29 @@ function labelList(labels: string[]): string {
 /** The watch list answer: how many saved items have something new, then the one most important recall named by its item. */
 export function speakWatch(input: WatchSpeech): string {
   const { totalItems, newItems, failedItems, recall, newRecallCount, label, firstCheck = false, emptyLabels = [] } = input;
-  if (totalItems === 0) return "Your watch list is empty. Say add to my watch list and the item you want checked.";
-  if (failedItems >= totalItems) return "I could not check your watch list because the recall sources were unavailable. Please try again in a minute.";
+  if (totalItems === 0) return spoken("Your watch list is empty. Say add to my watch list and the item you want checked.");
+  if (failedItems >= totalItems) return spoken("I could not check your watch list because the recall sources were unavailable. Please try again in a minute.");
   const unavailable = failedItems > 0 ? `I could not fully check ${failedItems} of your ${totalItems} items because a source was unavailable.` : "";
   if (!recall) {
     const none = failedItems > 0 ? "None of the other items has a new recall since you last asked."
       : firstCheck ? "On this first check, none of your items has a recall."
         : "None of your items has a new recall since you last asked.";
     const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
-    return [unavailable, none, empty].filter(Boolean).join(" ");
+    return spoken([unavailable, none, empty].filter(Boolean).join(" "));
   }
   const lead = totalItems === 1
     ? (firstCheck ? "On this first check, your item has a new recall." : "Your item has a new recall since you last asked.")
     : `${firstCheck ? "On this first check, " : ""}${newItems} of your ${totalItems} items ${newItems === 1 ? "has" : "have"} a new recall${firstCheck ? "." : " since you last asked."}`;
   const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
   const tail = [unavailable, empty, others(newRecallCount, Math.min(newRecallCount, 5))].filter(Boolean).join(" ");
-  return fit(lead, recall, tail, input.query ?? "", label ?? "");
+  return spoken(fit(lead, recall, tail, input.query ?? "", label ?? ""));
 }
 
 export function speakMany(results: SearchResult[], failed: Source[] = []): string {
   if (!failed.length) return speakManyCore(results);
   // Say what was NOT checked first, so a partial "no recalls" is never heard as a full one.
   const missing = `I could not reach ${failed.map((f) => SOURCE_NAMES[f]).join(" or ")}, so this answer is incomplete.`;
-  return `${missing} ${speakManyCore(results).replace("in the product, food or drug recall lists", "in the lists I could reach")}`;
+  return spoken(`${missing} ${speakManyCore(results).replace("in the product, food or drug recall lists", "in the lists I could reach")}`);
 }
 
 function speakManyCore(results: SearchResult[]): string {
@@ -237,8 +240,9 @@ function speakManyCore(results: SearchResult[]): string {
   const total = results.reduce((sum, r) => sum + r.total, 0);
   const newest = results.flatMap((r) => r.recalls).sort((a, b) => b.date.localeCompare(a.date))[0];
   if (total <= 0 || !newest) {
-    return `I found no recalls for ${query} in the product, food or drug recall lists. That does not prove it is safe, only that nothing is listed.`;
+    const subject = query ? ` for ${query}` : "";
+    return spoken(`I found no recalls${subject} in the product, food or drug recall lists. That does not prove it is safe, only that nothing is listed.`);
   }
   const held = results.reduce((sum, r) => sum + r.recalls.length, 0);
-  return fit(`I found ${count(total, "recall")} ${results.some((r) => /\(matched by /.test(r.query)) ? "matching" : mention(total)} ${query}.`, newest, others(total, held), query);
+  return spoken(fit(`I found ${count(total, "recall")} ${results.some((r) => /\(matched by /.test(r.query)) ? "matching" : mention(total)} ${query}.`, newest, others(total, held), query));
 }

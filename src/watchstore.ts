@@ -1,4 +1,4 @@
-import { cleanItem } from "./query.js";
+import { cleanItem, stripAccents } from "./query.js";
 import { normalizeMake, normalizeModel, route } from "./router.js";
 import { followUps, speakWatch } from "./speech.js";
 import type { Recall } from "./types.js";
@@ -58,7 +58,7 @@ export interface WatchInput {
   model?: string;
 }
 
-export type AddWatchOutcome = { ok: true; item: WatchItem; list: WatchItem[] } | { ok: false; message: string };
+export type AddWatchOutcome = { ok: true; item: WatchItem; list: WatchItem[]; note?: string } | { ok: false; message: string };
 export type RemoveWatchOutcome = { removed: boolean; item?: WatchItem; list: WatchItem[]; message: string };
 
 export interface WatchCheck {
@@ -97,7 +97,7 @@ export function classifyWatchItem(input: WatchInput): WatchDraft {
     const label = `${year} ${titleCase(fixedMake)} ${titleCase(fixedModel)}`;
     return { kind: "vehicle", label, query: label, year, make: fixedMake, model: fixedModel };
   }
-  const text = (input.item ?? input.query ?? "").trim().replace(/\s+/g, " ").slice(0, 80);
+  const text = stripAccents((input.item ?? input.query ?? "").trim()).replace(/\s+/g, " ").slice(0, 80);
   if (text.length < 2) throw new TypeError("Give an item phrase between 2 and 80 characters.");
   const routed = route(text);
   if (routed?.tool === "check_vehicle_recalls") {
@@ -106,10 +106,10 @@ export function classifyWatchItem(input: WatchInput): WatchDraft {
     return { kind: "vehicle", label, query: label, year, make: routedMake, model: routedModel };
   }
   if (routed?.tool === "ask_vehicle") throw new TypeError("That looks like a vehicle. Give the year, make and model so it can be checked.");
-  if (routed?.tool === "search_food_recalls") return { kind: "food", label: text, query: routed.args.query };
-  if (routed?.tool === "search_drug_recalls") return { kind: "drug", label: text, query: routed.args.query };
-  if (routed?.tool === "search_product_recalls") return { kind: "product", label: text, query: routed.args.query };
-  if (routed?.tool === "check_all_recalls") return { kind: "all", label: text, query: routed.args.query };
+  if (routed?.tool === "search_food_recalls") return { kind: "food", label: text, query: cleanItem(routed.args.query) };
+  if (routed?.tool === "search_drug_recalls") return { kind: "drug", label: text, query: cleanItem(routed.args.query) };
+  if (routed?.tool === "search_product_recalls") return { kind: "product", label: text, query: cleanItem(routed.args.query) };
+  if (routed?.tool === "check_all_recalls") return { kind: "all", label: text, query: cleanItem(routed.args.query) };
   return { kind: "all", label: text, query: cleanItem(text) || text };
 }
 

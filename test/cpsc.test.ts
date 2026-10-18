@@ -51,6 +51,18 @@ test("maps a real CPSC fixture, newest first, capped to 5", async () => {
   }
 });
 
+test("marks a CPSC recall high when the hazard or title mentions death or fatalities", async () => {
+  const body = [
+    { RecallNumber: "1", RecallDate: "2024-01-01T00:00:00", Title: "Crib", Hazards: [{ Name: "The crib can cause death." }] },
+    { RecallNumber: "2", RecallDate: "2024-01-02T00:00:00", Title: "Infant fatalities prompt stroller recall", Hazards: [{ Name: "Fall risk." }] },
+    { RecallNumber: "3", RecallDate: "2024-01-03T00:00:00", Title: "Lamp", Hazards: [{ Name: "Fire risk." }] },
+  ];
+  const result = await searchProducts("q", fetchReturning(200, body));
+  assert.equal(result.recalls.find((r) => r.id === "1")?.severity, "high");
+  assert.equal(result.recalls.find((r) => r.id === "2")?.severity, "high");
+  assert.equal(result.recalls.find((r) => r.id === "3")?.severity, undefined);
+});
+
 test("returns zero results for an empty array", async () => {
   const result = await searchProducts("nothing", fetchReturning(200, []));
   assert.equal(result.total, 0);

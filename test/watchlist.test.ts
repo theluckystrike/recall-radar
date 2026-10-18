@@ -13,6 +13,7 @@ import {
   removeWatchItem,
   searchWatchItem,
   SEARCH_SOURCES,
+  verifyWatchVehicle,
   watchUserId,
   type RecallSources,
   type WatchEnv,
@@ -122,6 +123,109 @@ test("a watch item keeps every word the person gave, including the brand", () =>
   assert.deepEqual(classifyWatchItem({ item: "ByHeart formula" }), { kind: "food", label: "ByHeart formula", query: "byheart formula" });
   assert.deepEqual(classifyWatchItem({ item: "Similac baby formula" }), { kind: "food", label: "Similac baby formula", query: "similac infant formula" });
   assert.deepEqual(classifyWatchItem({ item: "baby formula" }), { kind: "food", label: "baby formula", query: "infant formula" });
+});
+
+test("a watch item with accents searches the unaccented words", async () => {
+  const env = watchEnv();
+  const added = await addWatchItem(env, "user", { item: "jalapeño peppers" });
+  assert.ok(added.ok);
+  assert.equal(added.item.label, "jalapeno peppers");
+  assert.equal(added.item.query, "jalapeno peppers");
+  const removed = await removeWatchItem(env, "user", "jalapeño peppers");
+  assert.equal(removed.removed, true);
+});
+
+test("text with no Latin letters is refused with the validation message, never as an unreachable source", async () => {
+  const env = watchEnv();
+  for (const item of ["日本", "ибупрофен"]) {
+    const added = await addWatchItem(env, "user", { item });
+    assert.equal(added.ok, false, item);
+    if (!added.ok) {
+      assert.match(added.message, /English letters/, item);
+      assert.ok(!/could not be reached|unavailable/.test(added.message), item);
+    }
+    const server = createServer({ env, userId: "user" });
+    for (const name of ["check_all_recalls", "search_food_recalls", "search_drug_recalls", "search_product_recalls"]) {
+      const result = await toolHandler(server, name)({ query: item }, {});
+      const text = result.content?.[0]?.text ?? "";
+      assert.equal(result.isError, true, `${name} ${item}`);
+      assert.match(text, /English letters/, `${name} ${item}`);
+      assert.ok(!/could not be reached|did not answer in time/.test(text), `${name} ${item}`);
+    }
+  }
+  assert.equal((await readWatchList(env, "user")).length, 0);
+});
+
+test("an unknown vehicle is refused at add time and never saved", async () => {
+  const env = watchEnv();
+  const added = await addWatchItem(env, "user", { year: 2019, make: "honda", model: "accord" }, async () => "unknown");
+  assert.equal(added.ok, false);
+  if (!added.ok) {
+    assert.match(added.message, /does not list that make and model/);
+    assert.ok(added.message.length <= 120, added.message);
+  }
+  assert.equal((await readWatchList(env, "user")).length, 0);
+});
+
+test("a vehicle that could not be verified is saved with a note", async () => {
+  const env = watchEnv();
+  const added = await addWatchItem(env, "user", { year: 2019, make: "honda", model: "accord" }, async () => "unverified");
+  assert.ok(added.ok);
+  assert.match(added.note ?? "", /could not verify it with NHTSA yet/);
+  assert.equal((await readWatchList(env, "user")).length, 1);
+});
+
+test("a known vehicle is saved without a note and checked once", async () => {
+  const env = watchEnv();
+  let calls = 0;
+  const added = await addWatchItem(env, "user", { year: 2019, make: "honda", model: "accord" }, async () => {
+    calls++;
+    return "known";
+  });
+  assert.ok(added.ok);
+  assert.equal(added.note, undefined);
+  assert.equal(calls, 1);
+});
+
+test("the add check maps HTTP 400 to unknown and a network failure to unverified", async () => {
+  const http = (status: number) => (async () => new Response("{}", { status })) as typeof fetch;
+  assert.equal(await verifyWatchVehicle("honda", "accord", 2019, http(400)), "unknown");
+  const known = (async () => new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 })) as typeof fetch;
+  assert.equal(await verifyWatchVehicle("honda", "accord", 2019, known), "known");
+  const down = (async () => {
+    throw new TypeError("network down");
+  }) as typeof fetch;
+  assert.equal(await verifyWatchVehicle("honda", "accord", 2019, down), "unverified");
+});
+
+test("the add tool refuses an unknown vehicle and saves nothing", async () => {
+  const env = watchEnv();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 400 })) as typeof fetch;
+  try {
+    const result = await toolHandler(createServer({ env, userId: "user" }), "add_to_watch_list")({ year: 2019, make: "honda", model: "nope" }, {});
+    assert.equal(result.isError, true);
+    assert.match(result.content?.[0]?.text ?? "", /does not list that make and model/);
+    assert.equal((await readWatchList(env, "user")).length, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("the add tool saves a vehicle it could not verify and says so", async () => {
+  const env = watchEnv();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new TypeError("network down");
+  }) as typeof fetch;
+  try {
+    const result = await toolHandler(createServer({ env, userId: "user" }), "add_to_watch_list")({ year: 2019, make: "honda", model: "accord" }, {});
+    assert.equal(result.isError, undefined);
+    assert.match(result.content?.[0]?.text ?? "", /could not verify it with NHTSA yet/);
+    assert.equal((await readWatchList(env, "user")).length, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 test("watch list persists across sessions under a per-user key", async () => {
@@ -493,7 +597,7 @@ test("vehicle aliases work in watch classification and over the MCP vehicle tool
 
 test("check says no recalls found when sources answer zero and could not check only on failure", async () => {
   const env = watchEnv();
-  await addWatchItem(env, "user", { year: 2019, make: "Chevy", model: "Silverado" });
+  await addWatchItem(env, "user", { year: 2019, make: "Chevy", model: "Silverado" }, async () => "known");
   const empty = await checkWatchList(env, "user", async () => ({ recalls: [], failed: false }));
   assert.match(empty.text, /No recalls found for 2019 Chevrolet Silverado 1500\./);
   assert.ok(!empty.text.includes("could not check"), empty.text);

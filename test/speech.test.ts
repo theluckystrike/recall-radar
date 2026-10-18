@@ -150,6 +150,23 @@ test("speak: short FDA reason gets the 'FDA says the reason is' prefix", () => {
   );
 });
 
+test("speak: an empty FDA hazard leaves no double space", () => {
+  const r = recall({
+    source: "fda-food",
+    date: "2023-01-20",
+    title: "Chocolate Bar",
+    hazard: "",
+    remedy: "Return it.",
+  });
+  const out = speak({ query: "chocolate bar", source: "fda-food", total: 1, recalls: [r] });
+  assert.ok(!out.includes("  "), out);
+  assert.ok(!out.includes("reason is ."), out);
+  assert.equal(
+    out,
+    "I found 1 recall that mentions chocolate bar. The newest is from January 2023. It is Chocolate Bar. Return it.",
+  );
+});
+
 test("speak: drug recalls end with the pharmacist sentence", () => {
   const r = recall({
     source: "fda-drug",
@@ -362,7 +379,7 @@ test("speakMany: all empty returns combined no-recalls message", () => {
 test("speakMany: empty input yields no recalls message", () => {
   assert.equal(
     speakMany([]),
-    "I found no recalls for  in the product, food or drug recall lists. That does not prove it is safe, only that nothing is listed.",
+    "I found no recalls in the product, food or drug recall lists. That does not prove it is safe, only that nothing is listed.",
   );
 });
 

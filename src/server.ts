@@ -12,9 +12,11 @@ import {
   MemoryStorage,
   WatchStore,
   WATCH_KINDS,
+  classifyWatchItem,
   type AddWatchOutcome,
   type RemoveWatchOutcome,
   type WatchCheck,
+  type WatchDraft,
   type WatchEnv,
   type WatchItem,
   type WatchInput,
@@ -220,10 +222,44 @@ export async function readWatchList(env: WatchEnv | undefined, userId?: string |
   return watchTarget(env, userId).list();
 }
 
-export async function addWatchItem(env: WatchEnv | undefined, userId: string | null | undefined, input: WatchInput): Promise<AddWatchOutcome> {
+export type WatchVehicleVerification = "known" | "unknown" | "unverified";
+export type WatchVehicleVerifier = (make: string, model: string, year: number) => Promise<WatchVehicleVerification>;
+
+/** One NHTSA check when a vehicle is added. HTTP 400 means NHTSA does not know the make and model for that year. */
+export async function verifyWatchVehicle(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<WatchVehicleVerification> {
+  try {
+    await searchVehicle(make, model, year, fetchFn);
+    return "known";
+  } catch (err) {
+    return err instanceof SourceError && /HTTP 400/.test(err.message) ? "unknown" : "unverified";
+  }
+}
+
+const UNKNOWN_VEHICLE = "NHTSA does not list that make and model for that year. Check the spelling on the car and try again.";
+const UNVERIFIED_VEHICLE = "I could not verify it with NHTSA yet, so I saved it anyway.";
+
+export async function addWatchItem(
+  env: WatchEnv | undefined,
+  userId: string | null | undefined,
+  input: WatchInput,
+  verify: WatchVehicleVerifier = verifyWatchVehicle,
+): Promise<AddWatchOutcome> {
   if (!env) return { ok: false, message: "The watch list is not available right now." };
   if (!watchUserId(userId)) return { ok: false, message: NEED_USER_ID };
-  return watchTarget(env, userId).add(input);
+  let draft: WatchDraft;
+  try {
+    draft = classifyWatchItem(input);
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : "I could not add that item." };
+  }
+  let note: string | undefined;
+  if (draft.kind === "vehicle") {
+    const status = await verify(draft.make ?? "", draft.model ?? "", draft.year ?? 0);
+    if (status === "unknown") return { ok: false, message: UNKNOWN_VEHICLE };
+    if (status === "unverified") note = UNVERIFIED_VEHICLE;
+  }
+  const result = await watchTarget(env, userId).add(input);
+  return result.ok && note ? { ...result, note } : result;
 }
 
 export async function removeWatchItem(env: WatchEnv | undefined, userId: string | null | undefined, text: string): Promise<RemoveWatchOutcome> {
@@ -273,7 +309,7 @@ function registerWatch(server: McpServer, env: WatchEnv | undefined, userId: str
     if (!watchUserId(userId)) return watchNoUser();
     const result = await addWatchItem(env, userId, input);
     if (!result.ok) return { content: [{ type: "text" as const, text: result.message }], isError: true };
-    const text = `Added ${result.item.label} to your watch list. It now holds ${result.list.length} item${result.list.length === 1 ? "" : "s"}.`;
+    const text = `Added ${result.item.label} to your watch list. It now holds ${result.list.length} item${result.list.length === 1 ? "" : "s"}.${result.note ? ` ${result.note}` : ""}`;
     return { content: [{ type: "text" as const, text }], structuredContent: { item: watchView(result.item), items: result.list.map(watchView) } };
   });
 
@@ -364,6 +400,8 @@ function registerAll(server: McpServer) {
     annotations: readOnly,
     _meta: cardMeta,
   }, async ({ query: q }) => {
+    // A query with no Latin letters is a bad input, not three unreachable sources.
+    try { cleanItem(q); } catch (err) { return sorry(err); }
     const sources = ["cpsc", "fda-food", "fda-drug"] as const;
     const settled = await Promise.allSettled([SEARCH_SOURCES.product(q), SEARCH_SOURCES.food(q), SEARCH_SOURCES.drug(q)]);
     const results = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));

@@ -41,21 +41,27 @@ function firstName(raw: unknown): string {
   return "";
 }
 
+/** A hazard or title that mentions death or fatalities outranks an ordinary CPSC record. */
+const DEATH_MENTION = /\b(?:deaths?|fatalit(?:y|ies))\b/i;
+
 function toRecall(raw: unknown): Recall | null {
   if (!isRecord(raw)) return null;
   const id = str(raw.RecallNumber);
   const date = isoDate(raw.RecallDate);
   if (!id || !date) return null;
   const title = cap(str(raw.Title), MAX_TITLE) || cap(firstName(raw.Products), MAX_TITLE);
-  return {
+  const hazard = cap(firstName(raw.Hazards), MAX_TEXT);
+  const recall: Recall = {
     source: "cpsc",
     id,
     date,
     title,
-    hazard: cap(firstName(raw.Hazards), MAX_TEXT),
+    hazard,
     remedy: cap(firstName(raw.Remedies), MAX_TEXT),
     url: clean(str(raw.URL)),
   };
+  if (DEATH_MENTION.test(title) || DEATH_MENTION.test(hazard)) recall.severity = "high";
+  return recall;
 }
 
 /** Words too common to search CPSC titles by alone. */

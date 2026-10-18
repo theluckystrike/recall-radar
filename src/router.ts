@@ -1,7 +1,7 @@
 // Turns one spoken sentence into one tool call, without a language model. It stands in for the Alexa+ model in the simulator.
 // Safety rule: when the kind of item is not clear, search every source (check_all_recalls) instead of guessing one.
 
-import { cleanItem } from "./query.js";
+import { cleanItem, stripAccents } from "./query.js";
 
 export type RouteResult =
   | { tool: "check_vehicle_recalls"; args: { year: number; make: string; model: string } }
@@ -109,7 +109,9 @@ function spokenYears(text: string): string {
   return out.replace(/\btwo thousand\b/g, "2000");
 }
 
-const normalize = (text: string) => text.toLowerCase().replace(/[’`]/g, "'").replace(/[^a-z0-9'&\- ]+/g, " ").replace(/\s+/g, " ").trim();
+// Letters from any script are kept here so a query with no Latin letters reaches the server's validation,
+// which refuses it with the English letters message instead of searching a shortened phrase.
+const normalize = (text: string) => stripAccents(text).toLowerCase().replace(/[’`]/g, "'").replace(/[^\p{L}\p{N}'&\- ]+/gu, " ").replace(/\s+/g, " ").trim();
 const singular = (w: string) => (w.length > 4 && w.endsWith("ies") ? `${w.slice(0, -3)}y` : w.length > 3 && /(ches|shes|oes)$/.test(w) ? w.slice(0, -2) : w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
 
 function findYear(words: string[]): number | null {

@@ -17,6 +17,15 @@ test("README documents the run steps and the watch list tools", () => {
   assert.match(readme, /\b\d+ tests, no network/);
 });
 
+test("README matches the CPU limit and the response caps in the code", () => {
+  const readme = read("README.md");
+  assert.match(read("wrangler.jsonc"), /"cpu_ms":\s*300/);
+  assert.match(readme, /300 ms CPU limit/);
+  assert.match(readme, /at most 5 recalls/);
+  assert.match(readme, /120 character title/);
+  assert.match(readme, /300 character hazard and remedy/);
+});
+
 test("Agent Skill keeps the 70 word, four at a time and pharmacist rules", () => {
   const skill = read("skills/recall-radar/SKILL.md");
   assert.ok(skill.includes("about 70 words"));
