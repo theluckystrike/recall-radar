@@ -23,6 +23,6 @@ Use the Recall Radar MCP server at `https://recall-radar.lipmichal.workers.dev/m
 2. Read the tool's text answer aloud as it is. It is written for voice and stays under about 60 words.
 3. Never say a product is safe. When nothing is found, say no recalls were found in that source.
 4. When the answer says "Say 'more'", and the person says "more", read the next sentences from `structuredContent.followUps` (two at a time).
-5. For medicine, add: "Ask your pharmacist before you stop taking a medicine."
+5. For medicine, add the line "Ask your pharmacist before you stop taking a medicine."
 6. Offer the official link from the structured result when the person wants details.
 7. If the tool returns an error, say it plainly. An error is never "no recalls".
