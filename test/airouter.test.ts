@@ -33,3 +33,14 @@ test("model output is validated strictly", () => {
   assert.equal(validate({ tool: "search_food_recalls", args: { query: "x".repeat(200) } }), null);
   assert.deepEqual(validate({ tool: "search_food_recalls", args: { query: "Peanut Butter" } }), { tool: "search_food_recalls", args: { query: "peanut butter" } });
 });
+
+test("watch list model output is validated and the rules fallback routes watch phrases", async () => {
+  assert.deepEqual(validate({ tool: "add_to_watch_list", args: { year: 2018, make: "Honda", model: "Accord" } }), { tool: "add_to_watch_list", args: { year: 2018, make: "honda", model: "accord" } });
+  assert.deepEqual(validate({ tool: "add_to_watch_list", args: { item: "IKEA MALM Dresser" } }), { tool: "add_to_watch_list", args: { item: "ikea malm dresser" } });
+  assert.deepEqual(validate({ tool: "remove_from_watch_list", args: { item: "Crib" } }), { tool: "remove_from_watch_list", args: { item: "crib" } });
+  assert.deepEqual(validate({ tool: "check_my_watch_list", args: {} }), { tool: "check_my_watch_list", args: {} });
+  assert.equal(validate({ tool: "add_to_watch_list", args: { year: 1800, make: "ford", model: "t" } }), null);
+  const { route, by } = await aiRoute(noModel, "add my 2018 honda accord to my watch list", null);
+  assert.equal(by, "rules");
+  assert.deepEqual(route, { tool: "add_to_watch_list", args: { year: 2018, make: "honda", model: "accord" } });
+});

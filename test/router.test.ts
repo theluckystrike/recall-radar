@@ -58,6 +58,26 @@ test("routes realistic spoken questions to a source that can hold the recall", (
   }
 });
 
+test("routes watch list phrases to the watch list tools", () => {
+  const watchCases: Array<[string, string, Record<string, unknown>]> = [
+    ["add my 2018 honda accord to my watch list", "add_to_watch_list", { year: 2018, make: "honda", model: "accord" }],
+    ["watch the ikea malm dresser", "add_to_watch_list", { item: "ikea malm dresser" }],
+    ["add the crib to my watch list", "add_to_watch_list", { item: "crib" }],
+    ["put my 2018 honda accord on my watch list", "add_to_watch_list", { year: 2018, make: "honda", model: "accord" }],
+    ["check my watch list", "check_my_watch_list", {}],
+    ["anything new on my list", "check_my_watch_list", {}],
+    ["what is new on my watch list", "check_my_watch_list", {}],
+    ["remove the crib from my list", "remove_from_watch_list", { item: "crib" }],
+    ["remove my 2018 honda accord from my watch list", "remove_from_watch_list", { item: "2018 honda accord" }],
+  ];
+  for (const [utterance, tool, args] of watchCases) {
+    const got = route(utterance);
+    assert.ok(got, `no route for ${JSON.stringify(utterance)}`);
+    assert.equal(got.tool, tool, utterance);
+    assert.deepEqual(got.args, args, utterance);
+  }
+});
+
 test("returns null for nothing to search", () => {
   for (const u of ["", "   ", "any recalls", "is it recalled", "?!"]) assert.equal(route(u), null, JSON.stringify(u));
 });
@@ -76,4 +96,10 @@ test("caps long input and survives hostile text", () => {
 
 test("never mind cancels instead of searching", () => {
   for (const u of ["never mind", "nevermind", "cancel", "forget it"]) assert.equal(route(u), null, u);
+});
+
+test("a generic synonym keeps the brand words the person said", () => {
+  assert.deepEqual(route("is my ByHeart formula recalled")?.args, { query: "byheart formula" });
+  assert.deepEqual(route("is my Similac baby formula safe")?.args, { query: "similac infant formula" });
+  assert.deepEqual(route("is there a recall on baby formula")?.args, { query: "infant formula" });
 });

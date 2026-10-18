@@ -6,10 +6,39 @@ import { searchDrug, searchFood } from "./sources/fda.js";
 import { searchVehicle } from "./sources/nhtsa.js";
 import { followUps, speak, speakMany } from "./speech.js";
 import { cleanItem, singularPhrase } from "./query.js";
-import { SourceError, type SearchResult } from "./types.js";
+import {
+  MemoryStorage,
+  WatchStore,
+  WATCH_KINDS,
+  type AddWatchOutcome,
+  type RemoveWatchOutcome,
+  type WatchCheck,
+  type WatchEnv,
+  type WatchItem,
+  type WatchInput,
+  type WatchLookup,
+  type WatchLookupResult,
+  type WatchStorage,
+} from "./watchstore.js";
+import { SourceError, type Recall, type SearchResult, type Source } from "./types.js";
+
+export { WatchStore, classifyWatchItem } from "./watchstore.js";
+export type { AddWatchOutcome, RemoveWatchOutcome, WatchCheck, WatchDraft, WatchEnv, WatchInput, WatchItem, WatchKind, WatchLookup, WatchLookupResult, WatchStorage } from "./watchstore.js";
 
 export const NAME = "recall-radar";
 export const VERSION = "1.0.0";
+
+export interface ServerOptions {
+  env?: WatchEnv;
+  userId?: string | null;
+}
+
+const SOURCE_NAMES: Record<Source, string> = {
+  nhtsa: "NHTSA vehicle database",
+  cpsc: "Consumer Product Safety Commission",
+  "fda-food": "FDA food recall list",
+  "fda-drug": "FDA drug recall list",
+};
 
 const recallSchema = z.object({
   source: z.enum(["nhtsa", "cpsc", "fda-food", "fda-drug"]),
@@ -29,6 +58,7 @@ function sorry(err: unknown) {
   const message = err instanceof Error ? err.message : "";
   let text = "Sorry, something went wrong while checking recalls. Please try again.";
   if (err instanceof RangeError) text = `Sorry, ${message}`;
+  else if (err instanceof SourceError && /could not be fully checked/.test(message)) text = message;
   else if (err instanceof SourceError && /NHTSA request returned HTTP 400|nhtsa: HTTP 400/i.test(message)) text = "I could not find that make and model in the NHTSA database. Please say the make and model the way they appear on the car, for example Ford F-150.";
   else if (err instanceof SourceError && /timeout|abort/i.test(message)) text = "The government recall service did not answer in time. Please try again in a minute.";
   else if (err instanceof SourceError) text = "The government recall service could not be reached. Please try again in a minute.";
@@ -57,17 +87,205 @@ async function vehicleWithRetry(make: string, model: string, year: number): Prom
  * Clean the item words and search the plural and singular forms in parallel ("cantaloupes" and "cantaloupe"):
  * agencies file the same food under either form, and one form alone can miss the newest recalls.
  */
-async function itemSearch(search: (q: string) => Promise<SearchResult>, raw: string): Promise<SearchResult> {
+export async function itemSearch(search: (q: string) => Promise<SearchResult>, raw: string): Promise<SearchResult> {
   const q = cleanItem(raw);
   const single = singularPhrase(q);
   if (!single) return search(q);
   const [a, b] = await Promise.allSettled([search(q), search(single)]);
   const ok = [a, b].flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
   if (ok.length === 0) throw (a as PromiseRejectedResult).reason;
+  const total = Math.max(...ok.map((r) => r.total));
+  const failed = [a, b].filter((r) => r.status === "rejected").length;
+  // One form failed and the other found nothing: that is not "no recalls", it is a source only half checked.
+  if (failed > 0 && total === 0) {
+    const source = ok[0]?.source ?? "cpsc";
+    throw new SourceError(`The ${SOURCE_NAMES[source]} could not be fully checked because one of its two searches failed. Please try again in a minute.`);
+  }
   const seen = new Set<string>();
   const recalls = ok.flatMap((r) => r.recalls).filter((r) => !seen.has(r.id) && seen.add(r.id)).sort((x, y) => y.date.localeCompare(x.date)).slice(0, 5);
   const best = ok.reduce((m, r) => (r.total > m.total ? r : m));
-  return { ...best, query: q, total: Math.max(...ok.map((r) => r.total)), recalls };
+  return { ...best, query: q, total, recalls };
+}
+
+/** Accept the simulator header, an Alexa user id header or a session id. Unsafe characters are dropped. */
+export function watchUserId(userId?: string | null): string {
+  const key = (userId ?? "").trim().replace(/[^A-Za-z0-9._:@-]/g, "").slice(0, 100);
+  return key || "default";
+}
+
+/**
+ * The exact search each single tool runs. The tools and the watch check both call these, so a saved item is
+ * checked along the same path as the matching single tool: search_food_recalls for food (with its all-words
+ * retry), search_product_recalls for products, check_vehicle_recalls for vehicles and search_drug_recalls for drugs.
+ */
+export interface RecallSources {
+  vehicle(make: string, model: string, year: number): Promise<SearchResult>;
+  product(query: string): Promise<SearchResult>;
+  food(query: string): Promise<SearchResult>;
+  drug(query: string): Promise<SearchResult>;
+}
+
+export const SEARCH_SOURCES: RecallSources = {
+  vehicle: (make, model, year) => vehicleWithRetry(make, model, year),
+  product: (query) => itemSearch(searchProducts, query),
+  food: (query) => itemSearch(searchFood, query),
+  drug: (query) => itemSearch(searchDrug, query),
+};
+
+function watchSearches(item: WatchItem, sources: RecallSources): Array<Promise<SearchResult>> {
+  if (item.kind === "vehicle") return [sources.vehicle(item.make ?? "", item.model ?? "", item.year ?? 0)];
+  if (item.kind === "product") return [sources.product(item.query)];
+  if (item.kind === "food") return [sources.food(item.query)];
+  if (item.kind === "drug") return [sources.drug(item.query)];
+  return [sources.product(item.query), sources.food(item.query), sources.drug(item.query)];
+}
+
+export async function searchWatchItem(item: WatchItem, sources: RecallSources = SEARCH_SOURCES): Promise<WatchLookupResult> {
+  const settled = await Promise.allSettled(watchSearches(item, sources));
+  const results = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  const failed = settled.some((result) => result.status === "rejected");
+  const seen = new Set<string>();
+  const recalls = results.flatMap((result) => result.recalls)
+    .filter((recall) => !seen.has(recall.id) && seen.add(recall.id))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  return { recalls, failed };
+}
+
+/** The Durable Object as the worker sees it over RPC: one call per operation. */
+interface WatchRpc {
+  add(input: WatchInput): Promise<AddWatchOutcome>;
+  remove(text: string): Promise<RemoveWatchOutcome>;
+  list(): Promise<WatchItem[]>;
+  check(): Promise<WatchCheck>;
+}
+
+interface WatchTarget {
+  add(input: WatchInput): Promise<AddWatchOutcome>;
+  remove(text: string): Promise<RemoveWatchOutcome>;
+  list(): Promise<WatchItem[]>;
+  check(lookup: WatchLookup): Promise<WatchCheck>;
+}
+
+/** One in-memory watch list per env and user id, so tests and local dev run without the WATCH binding. */
+const fallbackStores = new WeakMap<WatchEnv, Map<string, WatchStorage>>();
+
+function fallbackStorage(env: WatchEnv, userId?: string | null): WatchStorage {
+  let perUser = fallbackStores.get(env);
+  if (!perUser) {
+    perUser = new Map();
+    fallbackStores.set(env, perUser);
+  }
+  const key = watchUserId(userId);
+  let storage = perUser.get(key);
+  if (!storage) {
+    storage = new MemoryStorage();
+    perUser.set(key, storage);
+  }
+  return storage;
+}
+
+function watchTarget(env: WatchEnv, userId: string | null | undefined, lookup: WatchLookup = searchWatchItem): WatchTarget {
+  const namespace = env.WATCH;
+  if (namespace) {
+    // One object per sanitised user id: every operation is a single call, so the object applies it in order.
+    const stub = namespace.get(namespace.idFromName(watchUserId(userId))) as unknown as WatchRpc;
+    return {
+      add: (input) => stub.add(input),
+      remove: (text) => stub.remove(text),
+      list: () => stub.list(),
+      check: () => stub.check(),
+    };
+  }
+  const local = new WatchStore({ storage: fallbackStorage(env, userId) });
+  return {
+    add: (input) => local.add(input),
+    remove: (text) => local.remove(text),
+    list: () => local.list(),
+    check: (passed) => local.check(passed),
+  };
+}
+
+export async function readWatchList(env: WatchEnv | undefined, userId?: string | null): Promise<WatchItem[]> {
+  if (!env) return [];
+  return watchTarget(env, userId).list();
+}
+
+export async function addWatchItem(env: WatchEnv | undefined, userId: string | null | undefined, input: WatchInput): Promise<AddWatchOutcome> {
+  if (!env) return { ok: false, message: "The watch list is not available right now." };
+  return watchTarget(env, userId).add(input);
+}
+
+export async function removeWatchItem(env: WatchEnv | undefined, userId: string | null | undefined, text: string): Promise<RemoveWatchOutcome> {
+  if (!env) return { removed: false, list: [], message: "The watch list is not available right now." };
+  return watchTarget(env, userId).remove(text);
+}
+
+export async function checkWatchList(env: WatchEnv | undefined, userId: string | null | undefined, lookup: WatchLookup = searchWatchItem): Promise<WatchCheck> {
+  if (!env) {
+    return { totalItems: 0, newItems: 0, failedItems: 0, recalls: [], followUps: [], items: [], text: "The watch list is not available right now." };
+  }
+  return watchTarget(env, userId, lookup).check(lookup);
+}
+
+function watchView(item: WatchItem) {
+  return { id: item.id, kind: item.kind, label: item.label, query: item.query };
+}
+
+function watchUnavailable() {
+  return { content: [{ type: "text" as const, text: "The watch list is not available right now." }], isError: true };
+}
+
+function registerWatch(server: McpServer, env: WatchEnv | undefined, userId: string | null | undefined) {
+  const watchItemSchema = z.object({ id: z.string(), kind: z.enum(WATCH_KINDS), label: z.string(), query: z.string() });
+  server.registerTool("add_to_watch_list", {
+    title: "Add to watch list",
+    description: "Add a vehicle, household product, food or medicine to the household watch list. Give a vehicle as year, make and model, or give an item phrase. The list holds up to 10 items.",
+    inputSchema: z.object({
+      item: z.string().trim().min(2).max(80).optional().describe("An item phrase, for example \"IKEA MALM dresser\" or \"peanut butter\"."),
+      query: z.string().trim().min(2).max(80).optional().describe("The same item phrase, when a client sends query instead of item."),
+      year: z.number().int().min(1950).max(2100).optional(),
+      make: z.string().trim().min(2).max(30).optional(),
+      model: z.string().trim().min(1).max(40).optional(),
+    }).strict(),
+    outputSchema: z.object({ item: watchItemSchema, items: z.array(watchItemSchema) }),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, async (input) => {
+    if (!env) return watchUnavailable();
+    const result = await addWatchItem(env, userId, input);
+    if (!result.ok) return { content: [{ type: "text" as const, text: result.message }], isError: true };
+    const text = `Added ${result.item.label} to your watch list. It now holds ${result.list.length} item${result.list.length === 1 ? "" : "s"}.`;
+    return { content: [{ type: "text" as const, text }], structuredContent: { item: watchView(result.item), items: result.list.map(watchView) } };
+  });
+
+  server.registerTool("remove_from_watch_list", {
+    title: "Remove from watch list",
+    description: "Remove one saved item from the household watch list. Use for phrases like \"Remove the crib from my list\".",
+    inputSchema: z.object({
+      item: z.string().trim().min(2).max(80).optional().describe("The saved item to remove, for example \"crib\" or \"2018 Honda Accord\"."),
+      query: z.string().trim().min(2).max(80).optional().describe("The same saved item, when a client sends query instead of item."),
+    }).strict(),
+    outputSchema: z.object({ removed: z.boolean(), items: z.array(watchItemSchema) }),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (input) => {
+    if (!env) return watchUnavailable();
+    const result = await removeWatchItem(env, userId, input.item ?? input.query ?? "");
+    return { content: [{ type: "text" as const, text: result.message }], structuredContent: { removed: result.removed, items: result.list.map(watchView) } };
+  });
+
+  server.registerTool("check_my_watch_list", {
+    title: "Check my watch list",
+    description: "Check every saved watch list item for recalls and report only recalls that were not reported before. Use for \"Check my watch list\" and \"Anything new on my list\".",
+    inputSchema: z.object({}).strict(),
+    outputSchema: z.object({ totalItems: z.number(), newItems: z.number(), failedItems: z.number(), recalls: z.array(recallSchema), followUps: z.array(z.string()) }),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, async () => {
+    if (!env) return watchUnavailable();
+    const result = await checkWatchList(env, userId);
+    return {
+      content: [{ type: "text" as const, text: result.text }],
+      structuredContent: { totalItems: result.totalItems, newItems: result.newItems, failedItems: result.failedItems, recalls: result.recalls, followUps: result.followUps },
+    };
+  });
 }
 
 function registerVehicle(server: McpServer) {
@@ -82,19 +300,19 @@ function registerVehicle(server: McpServer) {
     outputSchema: resultSchema,
     annotations: readOnly,
   }, async ({ year, make, model }) => {
-    try { return answer(await vehicleWithRetry(make, model, year)); } catch (err) { return sorry(err); }
+    try { return answer(await SEARCH_SOURCES.vehicle(make, model, year)); } catch (err) { return sorry(err); }
   });
 }
 
 function registerSearches(server: McpServer) {
   const tools: Array<[string, string, string, (q: string) => Promise<SearchResult>]> = [
-    ["search_product_recalls", "Search consumer product recalls", "Search U.S. Consumer Product Safety Commission recalls for household products: cribs, strollers, toys, appliances, furniture, heaters. Use for \"Is the Graco pack and play recalled?\".", searchProducts],
-    ["search_food_recalls", "Search food recalls", "Search FDA food recalls and safety alerts, newest first. Use for \"Any recalls on peanut butter?\".", searchFood],
-    ["search_drug_recalls", "Search medicine recalls", "Search FDA drug recalls for medicines, newest first. Use for \"Was my ibuprofen recalled?\". Not medical advice.", searchDrug],
+    ["search_product_recalls", "Search consumer product recalls", "Search U.S. Consumer Product Safety Commission recalls for household products: cribs, strollers, toys, appliances, furniture, heaters. Use for \"Is the Graco pack and play recalled?\".", SEARCH_SOURCES.product],
+    ["search_food_recalls", "Search food recalls", "Search FDA food recalls and safety alerts, newest first. Use for \"Any recalls on peanut butter?\".", SEARCH_SOURCES.food],
+    ["search_drug_recalls", "Search medicine recalls", "Search FDA drug recalls for medicines, newest first. Use for \"Was my ibuprofen recalled?\". Not medical advice.", SEARCH_SOURCES.drug],
   ];
   for (const [name, title, description, search] of tools) {
     server.registerTool(name, { title, description, inputSchema: z.object({ query }).strict(), outputSchema: resultSchema, annotations: readOnly },
-      async ({ query: q }) => { try { return answer(await itemSearch(search, q)); } catch (err) { return sorry(err); } });
+      async ({ query: q }) => { try { return answer(await search(q)); } catch (err) { return sorry(err); } });
   }
 }
 
@@ -107,7 +325,7 @@ function registerAll(server: McpServer) {
     annotations: readOnly,
   }, async ({ query: q }) => {
     const sources = ["cpsc", "fda-food", "fda-drug"] as const;
-    const settled = await Promise.allSettled([itemSearch(searchProducts, q), itemSearch(searchFood, q), itemSearch(searchDrug, q)]);
+    const settled = await Promise.allSettled([SEARCH_SOURCES.product(q), SEARCH_SOURCES.food(q), SEARCH_SOURCES.drug(q)]);
     const results = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
     // One merged, newest-first list: the spoken answer reads the first, "more" reads the next four.
     const merged = results.flatMap((r) => r.recalls).sort((a, b) => b.date.localeCompare(a.date));
@@ -118,10 +336,11 @@ function registerAll(server: McpServer) {
 }
 
 /** One fresh server per request: the endpoint is stateless. */
-export function createServer(): McpServer {
+export function createServer(options: ServerOptions = {}): McpServer {
   const server = new McpServer({ name: NAME, version: VERSION });
   registerVehicle(server);
   registerSearches(server);
   registerAll(server);
+  registerWatch(server, options.env, options.userId);
   return server;
 }

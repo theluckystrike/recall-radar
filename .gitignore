@@ -5,3 +5,4 @@ dist/
 video/
 SPEC.md
 SUBMISSION.md
+.oc-*.log

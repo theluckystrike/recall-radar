@@ -6,6 +6,10 @@
   "assets": { "directory": "./web", "binding": "ASSETS" },
   "ai": { "binding": "AI" },
   "kv_namespaces": [{ "binding": "LIMITS", "id": "af3516d447194afaab4cc5bb12cbc5b4" }],
+  "durable_objects": {
+    "bindings": [{ "name": "WATCH", "class_name": "WatchListDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WatchListDO"] }],
   "workers_dev": true,
   "observability": { "enabled": false },
   "limits": { "cpu_ms": 300 }

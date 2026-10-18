@@ -26,6 +26,34 @@
   var listening = false;
   var voicesCache = [];
 
+  function randomId() {
+    if (window.crypto && window.crypto.getRandomValues) {
+      var bytes = new Uint8Array(16);
+      window.crypto.getRandomValues(bytes);
+      var hex = "";
+      for (var i = 0; i < bytes.length; i++) {
+        hex += ("0" + bytes[i].toString(16)).slice(-2);
+      }
+      return "sim-" + hex;
+    }
+    return "sim-" + Date.now().toString(16) + Math.random().toString(16).slice(2);
+  }
+
+  function resolveUserId() {
+    var key = "recallRadarUserId";
+    try {
+      var saved = window.localStorage.getItem(key);
+      if (saved) return saved;
+      var created = randomId();
+      window.localStorage.setItem(key, created);
+      return created;
+    } catch (err) {
+      return randomId();
+    }
+  }
+
+  var userId = resolveUserId();
+
   function $(id) {
     return document.getElementById(id);
   }
@@ -143,7 +171,8 @@
 
     var headers = {
       "content-type": "application/json",
-      "accept": "application/json, text/event-stream"
+      "accept": "application/json, text/event-stream",
+      "X-User-Id": userId
     };
     if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
@@ -192,7 +221,7 @@
   function routeText(utterance) {
     return fetch("/route", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "X-User-Id": userId },
       body: JSON.stringify({ utterance: utterance, pending: pendingVehicle })
     }).then(function (response) {
       if (response.status === 404) return null;
@@ -392,7 +421,7 @@
 
   function readMore() {
     if (followIndex >= followUps.length) { say("There is nothing more to read for that question."); return; }
-    var next = followUps.slice(followIndex, followIndex + 2);
+    var next = followUps.slice(followIndex, followIndex + 4);
     followIndex += next.length;
     var tail = followIndex < followUps.length ? " Say more for the next ones." : "";
     say(next.join(" ") + tail);
@@ -436,7 +465,9 @@
     followUps = collectFollowUps(result.structuredContent);
     followIndex = 0;
     setTranscript(text);
-    renderCards(extractResults(result.structuredContent));
+    var watchUpdate = result.structuredContent && Array.isArray(result.structuredContent.items) && !Array.isArray(result.structuredContent.recalls);
+    if (watchUpdate) resultsEl.textContent = "";
+    else renderCards(extractResults(result.structuredContent));
     setRing("speaking");
     if (!speak(text)) {
       setTimeout(resetSpeakingRing, 1500);

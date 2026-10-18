@@ -19,6 +19,9 @@ Most people never hear about the recalls that apply to them. Recall notices go o
 | `search_food_recalls` | FDA food enforcement reports | "Any recalls on peanut butter?" |
 | `search_drug_recalls` | FDA drug enforcement reports | "Was my ibuprofen recalled?" |
 | `check_all_recalls` | CPSC and both FDA lists in parallel | "Any recalls on infant formula?" |
+| `add_to_watch_list` | Saves a vehicle, product, food or medicine for later checks | "Add my 2018 Honda Accord to my watch list" |
+| `remove_from_watch_list` | Removes one saved item | "Remove the crib from my list" |
+| `check_my_watch_list` | Checks every saved item and reports only new recalls | "Check my watch list" |
 
 Every tool returns a spoken answer of at most 70 words and the full structured result (title, date, hazard, remedy, official link, severity) for a screen or a follow-up.
 
@@ -32,6 +35,12 @@ Every tool returns a spoken answer of at most 70 words and the full structured r
 
 Serious recalls (FDA Class I, or NHTSA "park it outside") start with the word "Important."
 
+## Watch list
+
+A household can save up to 10 vehicles, products, foods or medicines. Each user id has its own Durable Object, a small SQLite-backed store on Cloudflare Workers, found by `idFromName` of the sanitised user id. The object is single-threaded, so an add, a remove and a check run one at a time and never lose a write. The simulator creates a random id once, keeps it in the browser local storage and sends it with every request. An Alexa client can send `X-Alexa-User-Id`, and an MCP client can send `X-User-Id` or a `user_id` query parameter. When the `WATCH` binding is absent, for example in tests or local dev without it, an in-memory store per user id stands in.
+
+`check_my_watch_list` checks every saved item in parallel, reports only recall ids it has not reported for that item before, and answers in the same short spoken style. If a source fails, the answer says that source was unavailable and never reports it as no recalls.
+
 ## How it works
 
 ```
@@ -42,7 +51,7 @@ Alexa+ (or any MCP client) --Streamable HTTP--> /mcp on Cloudflare Workers
 ```
 
 - The MCP server is `@modelcontextprotocol/server` 2.3.1 over stateless Streamable HTTP. It serves the 2025-11-25 protocol and the 2026-07-28 revision from one server factory.
-- It runs on Cloudflare Workers, with no database, no API keys and no tracking.
+- It runs on Cloudflare Workers, with a Durable Object per user for the watch list, a small KV namespace for the routing limit, no API keys and no tracking.
 - Each source call has a 4-second timeout. CPSC title search is literal, so the server also searches the most distinctive words ("ikea", "malm") in the same parallel round, and keeps only recalls whose title contains those words. "ikea malm dresser" finds the MALM recall, and "uppababy high chair" never returns another brand's high chair.
 - The Agent Skill at `skills/recall-radar/SKILL.md` tells an agent which tool to pick and how to read the answer aloud.
 
@@ -52,14 +61,17 @@ Queries are cleaned on the server, so any client can send a whole phrase. The qu
 
 The page at `/` simulates an Alexa+ device for judges. You speak (browser speech recognition) or type. A language model (Llama 3.3 70B on Workers AI) reads the MCP tool descriptions and picks the tool and its arguments, the way the Alexa+ model would. The page then calls `/mcp` itself as a real MCP client, sending `initialize`, `notifications/initialized` and `tools/call`. The MCP log on the page shows the routing step and each MCP call with its latency. The reply is read aloud with the browser's speech synthesis.
 
-The model's output is validated before use. If it is invalid, or the demo reaches its daily cap of 200 routing calls, a rule-based router takes over. The simulator also keeps a short conversation. It asks for a missing model year, and "more" reads the next recalls from `structuredContent.followUps`.
+The model's output is validated before use. If it is invalid, or the demo reaches its daily cap of 200 routing calls, a rule-based router takes over. The simulator also keeps a short conversation. It asks for a missing model year, and "more" reads the next four recalls from `structuredContent.followUps`. Built with Llama.
 
 ## Run it
 
+Install the dependencies with `npm install`. Sign in to Cloudflare once with `npx wrangler login`. Create the KV namespace with `npx wrangler kv namespace create LIMITS`, then put the printed id in the `kv_namespaces` entry in `wrangler.jsonc`. The routing limit uses that binding. The watch list uses the `WATCH` Durable Object declared under `durable_objects` and `migrations` in `wrangler.jsonc`, and Wrangler creates it on the first deploy. Start the local server with `npx wrangler dev` and open http://127.0.0.1:8787. If the `AI` binding is not configured, the simulator uses the rule router.
+
 ```bash
 npm install
+npx wrangler kv namespace create LIMITS
 npx wrangler dev          # http://127.0.0.1:8787
-npx tsx --test test/*.test.ts             # 75 tests, no network
+npx tsx --test test/*.test.ts             # 104 tests, no network
 node test/live-mcp.mjs http://127.0.0.1:8787   # live MCP check against the real sources
 ```
 

@@ -18,11 +18,15 @@ Tools:
 - search_food_recalls {"query": string}: food, drinks, infant formula, pet food.
 - search_drug_recalls {"query": string}: medicines, eye drops, sanitizer, sunscreen, supplements.
 - check_all_recalls {"query": string}: household products (cribs, toys, appliances, furniture, electronics) and anything unclear. Keep brand and product words, for example "uppababy high chair".
+- add_to_watch_list {"year": number, "make": string, "model": string} or {"item": string}: save a vehicle, product, food or medicine for later checks. Use the vehicle shape only when the year, make and model are all present.
+- remove_from_watch_list {"item": string}: remove one saved item from the watch list.
+- check_my_watch_list {}: check every saved item for new recalls.
 Special replies:
 - {"tool":"ask_vehicle","args":{"make":..., "model":..., "missing":"year"|"model"}} when a vehicle question lacks the year or the model.
 - {"tool":"more","args":{}} when the person wants to hear more of the previous answer ("more", "yes", "go on", "the others").
 - {"tool":"none","args":{}} when it is not a recall question.
 The query is the item only: drop words about the worry ("safe", "outbreak", "listeria", "still okay", "to take").
+Watch list phrases such as "add my 2018 Honda Accord to my watch list", "watch the IKEA MALM dresser", "check my watch list", "anything new on my list" and "remove the crib from my list" use the watch list tools.
 "Mini", "Fire", "Ring" and other brand words are products unless a model year and a car model follow.`;
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -59,6 +63,19 @@ export function validate(raw: unknown): RouteResult | null {
   if (tool === "search_food_recalls" || tool === "search_drug_recalls" || tool === "check_all_recalls" || tool === "search_product_recalls") {
     const query = str(a.query, 60);
     return query ? { tool, args: { query } } : null;
+  }
+  if (tool === "check_my_watch_list") return { tool, args: {} };
+  if (tool === "remove_from_watch_list") {
+    const item = str(a.item, 80) ?? str(a.query, 80);
+    return item ? { tool, args: { item } } : null;
+  }
+  if (tool === "add_to_watch_list") {
+    if (a.year !== undefined || a.make !== undefined || a.model !== undefined) {
+      const vehicle = validateVehicle(a, maxYear);
+      return vehicle?.tool === "check_vehicle_recalls" ? { tool, args: vehicle.args } : null;
+    }
+    const item = str(a.item, 80) ?? str(a.query, 80);
+    return item ? { tool, args: { item } } : null;
   }
   return null;
 }

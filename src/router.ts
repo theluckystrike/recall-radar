@@ -1,10 +1,15 @@
 // Turns one spoken sentence into one tool call, without a language model. It stands in for the Alexa+ model in the simulator.
 // Safety rule: when the kind of item is not clear, search every source (check_all_recalls) instead of guessing one.
 
+import { cleanItem } from "./query.js";
+
 export type RouteResult =
   | { tool: "check_vehicle_recalls"; args: { year: number; make: string; model: string } }
   | { tool: "search_food_recalls" | "search_drug_recalls" | "search_product_recalls" | "check_all_recalls"; args: { query: string } }
   | { tool: "ask_vehicle"; args: { make: string; model: string; missing: "year" | "model" } }
+  | { tool: "add_to_watch_list"; args: { year: number; make: string; model: string } | { item: string } }
+  | { tool: "remove_from_watch_list"; args: { item: string } }
+  | { tool: "check_my_watch_list"; args: Record<string, never> }
   | { tool: "more"; args: Record<string, never> };
 
 /** Spoken alias -> NHTSA make name. Longest aliases are matched first. */
@@ -150,16 +155,73 @@ function itemQuery(words: string[]): string {
   return words.filter((w) => !FILLERS.has(w)).join(" ").replace(/'s\b/g, "").trim().slice(0, 60);
 }
 
+/** Only the phrases whose search form differs from the spoken form. Longest first, so "baby formula" wins over "formula". */
+const PHRASE_SYNONYMS: Array<[string, string]> = PHRASES
+  .filter(([phrase, , target]) => phrase !== target)
+  .map(([phrase, , target]) => [phrase, target] as [string, string])
+  .sort((a, b) => b[0].length - a[0].length);
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The item words with generic synonyms swapped, keeping everything else the person said:
+ * "similac baby formula" -> "similac infant formula", "baby formula" -> "infant formula".
+ * A one word synonym only expands when it is the whole item, so a brand is never dropped:
+ * "byheart formula" stays "byheart formula" and "purell sanitizer" keeps its brand.
+ */
+function synonymQuery(text: string): string {
+  let out = itemQuery(cleanItem(text).split(" "));
+  for (const [phrase, target] of PHRASE_SYNONYMS) {
+    if (phrase.includes(" ")) out = out.replace(new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "g"), target);
+    else if (out === phrase) out = target;
+  }
+  return out;
+}
+
+const WATCH_LIST = "(?:my\\s+)?(?:watch\\s*list|watchlist|list)";
+
+function watchCheck(text: string): boolean {
+  return new RegExp(`^(?:check|show|read|open|watch)\\s+${WATCH_LIST}$`).test(text)
+    || new RegExp(`^(?:anything|any|what'?s|what is|is there anything)\\s+new\\s+(?:on|in)\\s+${WATCH_LIST}$`).test(text)
+    || new RegExp(`^what(?:'s| is)\\s+on\\s+${WATCH_LIST}$`).test(text);
+}
+
+function watchRemove(text: string): RouteResult | null {
+  const found = new RegExp(`^(?:remove|delete|take|drop)\\s+(.+?)(?:\\s+(?:from|off)\\s+${WATCH_LIST})?$`).exec(text);
+  const item = itemQuery((found?.[1] ?? "").split(" "));
+  return item ? { tool: "remove_from_watch_list", args: { item } } : null;
+}
+
+function watchAdd(text: string): RouteResult | null {
+  const found = new RegExp(`^(?:add|put|save)\\s+(.+?)\\s+(?:to|on)\\s+${WATCH_LIST}$`).exec(text);
+  let payload = found?.[1] ?? "";
+  if (!payload && text.startsWith("watch ")) {
+    const rest = text.slice(6);
+    if (!new RegExp(`^${WATCH_LIST}$`).test(rest)) payload = rest;
+  }
+  if (!payload) return null;
+  const vehicle = vehicleRoute(payload, payload.split(" "));
+  if (vehicle?.tool === "check_vehicle_recalls") return { tool: "add_to_watch_list", args: vehicle.args };
+  const item = itemQuery(payload.split(" "));
+  return item ? { tool: "add_to_watch_list", args: { item } } : null;
+}
+
 export function route(utterance: string): RouteResult | null {
   const text = spokenYears(normalize(utterance ?? "").slice(0, 200));
   if (!text) return null;
   if (/^(never ?mind|cancel|stop|forget it|no thanks|nothing)$/.test(text)) return null;
   if (/^(more|next|tell me more|the others|what else|keep going|go on|and the others)$/.test(text) || (text.split(" ").length <= 6 && /\b(next one|next recall|more recalls|the rest|the others)\b/.test(text))) return { tool: "more", args: {} };
+  if (watchCheck(text)) return { tool: "check_my_watch_list", args: {} };
+  const removed = watchRemove(text);
+  if (removed) return removed;
+  const added = watchAdd(text);
+  if (added) return added;
   const words = text.split(" ");
   const vehicle = vehicleRoute(text, words);
   if (vehicle) return vehicle;
-  for (const [phrase, kind, query] of PHRASES) {
-    if (` ${text} `.includes(` ${phrase} `)) return { tool: kind === "drug" ? "search_drug_recalls" : "search_food_recalls", args: { query } };
+  for (const [phrase, kind, target] of PHRASES) {
+    // An unchanged phrase is already the canonical search form ("cough syrup"); a synonym keeps the other words ("Similac baby formula").
+    if (` ${text} `.includes(` ${phrase} `)) return { tool: kind === "drug" ? "search_drug_recalls" : "search_food_recalls", args: { query: target === phrase ? phrase : synonymQuery(text) } };
   }
   const query = itemQuery(words);
   if (!query) return null;

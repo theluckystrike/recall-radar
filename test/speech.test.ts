@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { speak, speakMany, spokenTitle } from "../src/speech";
+import { speak, speakMany, speakWatch, spokenTitle } from "../src/speech";
 import type { Recall, SearchResult, Source } from "../src/types";
 
 function recall(overrides: Partial<Recall>): Recall {
@@ -136,7 +136,7 @@ test("speak: high severity prepends Important", () => {
 
 // ---- FDA short reason prefix + pharmacist sentence ----
 
-test("speak: short FDA reason gets the 'FDA gives the reason as' prefix", () => {
+test("speak: short FDA reason gets the 'FDA says the reason is' prefix", () => {
   const r = recall({
     source: "fda-food",
     date: "2023-01-20",
@@ -146,7 +146,7 @@ test("speak: short FDA reason gets the 'FDA gives the reason as' prefix", () => 
   });
   assert.equal(
     speak({ query: "chocolate bar", source: "fda-food", total: 1, recalls: [r] }),
-    "I found 1 recall that mentions chocolate bar. The newest is from January 2023. It is Chocolate Bar. The FDA gives the reason as: Undeclared milk. Return it.",
+    "I found 1 recall that mentions chocolate bar. The newest is from January 2023. It is Chocolate Bar. The FDA says the reason is Undeclared milk. Return it.",
   );
 });
 
@@ -262,6 +262,57 @@ test("spokenTitle: FDA description drops UPC, NET WT and sizes", () => {
   );
 });
 
+// ---- leading list markers from agency text ----
+
+test("speak: leading list markers are stripped from FDA and CPSC titles and descriptions", () => {
+  const fda = recall({
+    source: "fda-food",
+    title: "1. ByHeart Whole Nutrition Infant Formula",
+    hazard: "1) The product may contain undeclared milk.",
+    remedy: "a.) Return it to the store.",
+  });
+  const fdaOut = speak({ query: "byheart formula", source: "fda-food", total: 1, recalls: [fda] });
+  assert.ok(fdaOut.includes("It is ByHeart Whole Nutrition Infant Formula."), fdaOut);
+  assert.ok(!fdaOut.includes("It is 1."), fdaOut);
+  assert.ok(!fdaOut.includes("1)"), fdaOut);
+  assert.ok(!fdaOut.includes("a.)"), fdaOut);
+
+  const cpsc = recall({
+    title: "- Graco Crib",
+    hazard: "(a) The crib can collapse.",
+    remedy: "- Contact Graco for a refund.",
+  });
+  const cpscOut = speak({ query: "graco crib", source: "cpsc", total: 1, recalls: [cpsc] });
+  assert.ok(cpscOut.includes("It is Graco Crib."), cpscOut);
+  assert.ok(!cpscOut.includes("(a)"), cpscOut);
+  assert.ok(!cpscOut.includes("- Contact"), cpscOut);
+});
+
+test("speakWatch: reports the new count and says an unavailable source is not a no-recalls answer", () => {
+  const r = recall({ date: "2023-01-15", title: "Widget", hazard: "May cause injury.", remedy: "Contact the manufacturer." });
+  assert.equal(
+    speakWatch({ totalItems: 4, newItems: 1, failedItems: 0, recall: r, newRecallCount: 1 }),
+    "1 of your 4 items has a new recall since you last asked. The newest is from January 2023. It is Widget. May cause injury. Contact the manufacturer.",
+  );
+  const failed = speakWatch({ totalItems: 4, newItems: 0, failedItems: 2, newRecallCount: 0 });
+  assert.ok(failed.includes("could not fully check 2 of your 4 items"), failed);
+  assert.ok(!failed.toLowerCase().includes("no recalls"), failed);
+});
+
+test("speakWatch names the item the spoken recall belongs to", () => {
+  const r = recall({ source: "fda-food", date: "2026-01-05", title: "ByHeart Whole Nutrition Infant Formula", hazard: "The product may contain botulism.", remedy: "" });
+  const out = speakWatch({ totalItems: 1, newItems: 1, failedItems: 0, recall: r, newRecallCount: 1, query: "byheart formula", label: "ByHeart formula" });
+  assert.match(out, /For your ByHeart formula, the newest is from January 2026\./);
+  assert.ok(!out.includes("undefined"), out);
+});
+
+test("speakWatch with several new items says the count then names the most important item", () => {
+  const r = recall({ source: "fda-food", date: "2026-01-05", title: "ByHeart Whole Nutrition Infant Formula", hazard: "The product may contain botulism.", remedy: "" });
+  const out = speakWatch({ totalItems: 3, newItems: 2, failedItems: 0, recall: r, newRecallCount: 2, query: "byheart formula", label: "ByHeart formula" });
+  assert.match(out, /^2 of your 3 items have a new recall since you last asked\./);
+  assert.match(out, /For your ByHeart formula/);
+});
+
 // ---- speakMany ----
 
 test("speakMany: all empty returns combined no-recalls message", () => {
@@ -292,7 +343,7 @@ test("speakMany: reads the single newest recall across 3 sources", () => {
       { query: "peanut butter", source: "fda-food", total: 1, recalls: [r1] },
       { query: "peanut butter", source: "fda-drug", total: 1, recalls: [r3] },
     ]),
-    'I found 3 recalls that mention peanut butter. The newest is from January 2023. It is Peanut Butter Jar. The FDA gives the reason as: May contain salmonella. Return it to the store. There are 2 more. Say "more" to hear the next 2.',
+    'I found 3 recalls that mention peanut butter. The newest is from January 2023. It is Peanut Butter Jar. The FDA says the reason is May contain salmonella. Return it to the store. There are 2 more. Say "more" to hear the next 2.',
   );
 });
 

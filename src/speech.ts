@@ -78,6 +78,21 @@ function productTitle(title: string): string {
   return tidy(words(recalled?.[1] ?? t.split(/\s+Due to\b|;/i)[0] ?? t, MAX_WORDS_TITLE));
 }
 
+/** Leading list markers are screen furniture, not speech: "1. ByHeart" must never be read as "It is 1." */
+const LIST_MARKER = /^\s*(?:(?:\d{1,3}|[a-zA-Z])[.)]+|\(\d{1,3}\)|\([a-zA-Z]\)|[-*])\s+/;
+
+export function stripListMarker(text: string): string {
+  let out = text;
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(LIST_MARKER, "");
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+const scrub = (source: Source, text: string) => (source === "cpsc" || source.startsWith("fda") ? stripListMarker(text) : text);
+
 /** FDA product descriptions carry sizes, UPC codes and ingredients: keep the product name only. */
 function tidy(title: string): string {
   return title.replace(/\b\d+\s*\/\s*\d+\s*("|in\b|inch)?/gi, " ").replace(/\s+/g, " ").replace(/\s(of|and|the|with|for|to|in|or|are|is|was|were)$/i, "").trim();
@@ -100,21 +115,23 @@ function garbled(title: string): boolean {
 }
 
 export function spokenTitle(recall: Recall, query = ""): string {
-  if (recall.source !== "nhtsa" && recall.source !== "cpsc" && garbled(recall.title)) return query ? `a product listed under ${query}` : "a listed product";
-  if (recall.source === "nhtsa") return vehicleTitle(recall.title);
-  if (recall.source === "cpsc") return productTitle(recall.title);
-  return fdaTitle(recall.title);
+  const title = scrub(recall.source, recall.title);
+  if (recall.source !== "nhtsa" && recall.source !== "cpsc" && garbled(title)) return query ? `a product listed under ${query}` : "a listed product";
+  if (recall.source === "nhtsa") return vehicleTitle(title);
+  if (recall.source === "cpsc") return productTitle(title);
+  return fdaTitle(title);
 }
 
-function detail(recall: Recall, query = ""): string {
+function detail(recall: Recall, query = "", subject = ""): string {
   const important = recall.severity === "high" ? "Important. " : "";
   const what = recall.source === "nhtsa" ? `It affects ${spokenTitle(recall)}.` : `It is ${spokenTitle(recall, query)}.`;
-  const raw = core(firstSentence(lowerIfShouting(recall.hazard)));
+  const raw = core(firstSentence(lowerIfShouting(scrub(recall.source, recall.hazard))));
   // FDA reasons are often fragments ("Undeclared milk"): say where the words come from.
-  const hazard = recall.source.startsWith("fda") && raw.split(" ").length < 6 ? `The FDA gives the reason as: ${raw}` : raw;
+  const hazard = recall.source.startsWith("fda") && raw.split(" ").length < 6 ? `The FDA says the reason is ${raw}` : raw;
   const pharmacist = recall.source === "fda-drug" ? "Ask a pharmacist before you stop taking a medicine." : "";
-  const remedy = core(firstSentence(recall.remedy));
-  return [`${important}The newest is from ${monthYear(recall.date)}.`, what, hazard, remedy, pharmacist].filter(Boolean).join(" ");
+  const remedy = core(firstSentence(scrub(recall.source, recall.remedy)));
+  const newest = subject ? `For your ${subject}, the newest is from ${monthYear(recall.date)}.` : `The newest is from ${monthYear(recall.date)}.`;
+  return [`${important}${newest}`, what, hazard, remedy, pharmacist].filter(Boolean).join(" ");
 }
 
 /** The search note "(matched by graco and play)" is for screens, not for the ear. */
@@ -136,19 +153,19 @@ function others(total: number, held: number): string {
 }
 
 /** Hard budget for one spoken answer: drop the remedy sentence first, then the hazard, until it fits. */
-function fit(lead: string, recall: Recall, tail: string, query = ""): string {
-  const full = `${lead} ${detail(recall, query)}${tail}`;
+function fit(lead: string, recall: Recall, tail: string, query = "", subject = ""): string {
+  const full = `${lead} ${detail(recall, query, subject)}${tail}`;
   if (full.split(" ").length <= MAX_WORDS_ANSWER) return full;
-  const lean = `${lead} ${detail({ ...recall, remedy: "" }, query)}${tail}`;
+  const lean = `${lead} ${detail({ ...recall, remedy: "" }, query, subject)}${tail}`;
   if (lean.split(" ").length <= MAX_WORDS_ANSWER) return lean;
-  return `${lead} ${detail({ ...recall, remedy: "", hazard: "" }, query)}${tail}`;
+  return `${lead} ${detail({ ...recall, remedy: "", hazard: "" }, query, subject)}${tail}`;
 }
 
 /** One short sentence per further recall, for "more": "From March 2023: the seat belts. Dealers will replace the buckles." */
 export function followUps(recalls: Recall[]): string[] {
   return recalls.slice(1, 5).map((r) => {
     const what = r.source === "nhtsa" ? spokenTitle(r) : spokenTitle(r);
-    const why = core(firstSentence(lowerIfShouting(r.hazard)));
+    const why = core(firstSentence(lowerIfShouting(scrub(r.source, r.hazard))));
     const line = `From ${monthYear(r.date)}: ${tidy(what)}. ${why}`.replace(/\s+(in|of|and|the|with|for|to|from)\.$/i, ".").trim();
     return line.split(" ").length > 35 ? `${line.split(" ").slice(0, 35).join(" ").replace(/[\s,;:-]+$/, "")}.` : line;
   });
@@ -163,6 +180,32 @@ export function speak(result: SearchResult): string {
   const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${result.query}.`
     : `I found ${count(result.total, "recall")} ${matched ? "matching" : mention(result.total)} ${spokenQuery(result.query)}.`;
   return fit(lead, first, others(result.total, result.recalls.length), spokenQuery(result.query));
+}
+
+export interface WatchSpeech {
+  totalItems: number;
+  newItems: number;
+  failedItems: number;
+  recall?: Recall;
+  newRecallCount: number;
+  query?: string;
+  label?: string;
+}
+
+/** The watch list answer: how many saved items have something new, then the one most important recall named by its item. */
+export function speakWatch(input: WatchSpeech): string {
+  const { totalItems, newItems, failedItems, recall, newRecallCount, label } = input;
+  if (totalItems === 0) return "Your watch list is empty. Say add to my watch list and the item you want checked.";
+  if (failedItems >= totalItems) return "I could not check your watch list because the recall sources were unavailable. Please try again in a minute.";
+  const unavailable = failedItems > 0 ? `I could not fully check ${failedItems} of your ${totalItems} items because a source was unavailable.` : "";
+  if (!recall) {
+    const none = failedItems > 0 ? "None of the other items has a new recall since you last asked." : "None of your items has a new recall since you last asked.";
+    return [unavailable, none].filter(Boolean).join(" ");
+  }
+  const lead = totalItems === 1 ? "Your item has a new recall since you last asked."
+    : `${newItems} of your ${totalItems} items ${newItems === 1 ? "has" : "have"} a new recall since you last asked.`;
+  const tail = [unavailable, others(newRecallCount, Math.min(newRecallCount, 5))].filter(Boolean).join(" ");
+  return fit(lead, recall, tail, input.query ?? "", label ?? "");
 }
 
 export function speakMany(results: SearchResult[], failed: Source[] = []): string {
