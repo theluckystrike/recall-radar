@@ -14,6 +14,7 @@ const SOURCE_NAMES: Record<Source, string> = {
 
 const MAX_WORDS_SENTENCE = 26;
 const MAX_WORDS_TITLE = 9;
+const FOLLOW_LIMIT = 4;
 
 function monthYear(date: string): string {
   const [year = "", month = ""] = date.split("-");
@@ -129,7 +130,10 @@ function detail(recall: Recall, query = "", subject = ""): string {
   // FDA reasons are often fragments ("Undeclared milk"): say where the words come from.
   const hazard = recall.source.startsWith("fda") && raw.split(" ").length < 6 ? `The FDA says the reason is ${raw}` : raw;
   const pharmacist = recall.source === "fda-drug" ? "Ask a pharmacist before you stop taking a medicine." : "";
-  const remedy = core(firstSentence(scrub(recall.source, recall.remedy)));
+  const remedyText = core(firstSentence(scrub(recall.source, recall.remedy)));
+  const plain = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // When the agency repeated the hazard as the remedy, saying both adds nothing.
+  const remedy = remedyText && plain(remedyText) !== plain(raw) ? remedyText : "";
   const newest = subject ? `For your ${subject}, the newest is from ${monthYear(recall.date)}.` : `The newest is from ${monthYear(recall.date)}.`;
   return [`${important}${newest}`, what, hazard, remedy, pharmacist].filter(Boolean).join(" ");
 }
@@ -143,27 +147,28 @@ function count(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-/** The structured result holds the newest 5, so "more" offers at most the next 4. */
+/** The structured result holds at most 4 follow ups, so "more" never promises more than that. */
 function others(total: number, held: number): string {
   const rest = total - 1;
   if (rest <= 0) return "";
-  const next = Math.min(rest, Math.max(0, held - 1));
+  const next = Math.min(rest, Math.max(0, held - 1), FOLLOW_LIMIT);
   const say = next > 0 ? ` Say "more" to hear the next ${next === 1 ? "one" : next}.` : "";
   return ` There ${rest === 1 ? "is 1 more" : `are ${rest} more`}.${say}`;
 }
 
 /** Hard budget for one spoken answer: drop the remedy sentence first, then the hazard, until it fits. */
 function fit(lead: string, recall: Recall, tail: string, query = "", subject = ""): string {
-  const full = `${lead} ${detail(recall, query, subject)}${tail}`;
+  const tailText = tail ? (tail.startsWith(" ") ? tail : ` ${tail}`) : "";
+  const full = `${lead} ${detail(recall, query, subject)}${tailText}`;
   if (full.split(" ").length <= MAX_WORDS_ANSWER) return full;
-  const lean = `${lead} ${detail({ ...recall, remedy: "" }, query, subject)}${tail}`;
+  const lean = `${lead} ${detail({ ...recall, remedy: "" }, query, subject)}${tailText}`;
   if (lean.split(" ").length <= MAX_WORDS_ANSWER) return lean;
-  return `${lead} ${detail({ ...recall, remedy: "", hazard: "" }, query, subject)}${tail}`;
+  return `${lead} ${detail({ ...recall, remedy: "", hazard: "" }, query, subject)}${tailText}`;
 }
 
 /** One short sentence per further recall, for "more": "From March 2023: the seat belts. Dealers will replace the buckles." */
 export function followUps(recalls: Recall[]): string[] {
-  return recalls.slice(1, 5).map((r) => {
+  return recalls.slice(1, 1 + FOLLOW_LIMIT).map((r) => {
     const what = r.source === "nhtsa" ? spokenTitle(r) : spokenTitle(r);
     const why = core(firstSentence(lowerIfShouting(scrub(r.source, r.hazard))));
     const line = `From ${monthYear(r.date)}: ${tidy(what)}. ${why}`.replace(/\s+(in|of|and|the|with|for|to|from)\.$/i, ".").trim();
@@ -190,21 +195,33 @@ export interface WatchSpeech {
   newRecallCount: number;
   query?: string;
   label?: string;
+  firstCheck?: boolean;
+  emptyLabels?: string[];
+}
+
+function labelList(labels: string[]): string {
+  if (labels.length <= 1) return labels[0] ?? "";
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
 /** The watch list answer: how many saved items have something new, then the one most important recall named by its item. */
 export function speakWatch(input: WatchSpeech): string {
-  const { totalItems, newItems, failedItems, recall, newRecallCount, label } = input;
+  const { totalItems, newItems, failedItems, recall, newRecallCount, label, firstCheck = false, emptyLabels = [] } = input;
   if (totalItems === 0) return "Your watch list is empty. Say add to my watch list and the item you want checked.";
   if (failedItems >= totalItems) return "I could not check your watch list because the recall sources were unavailable. Please try again in a minute.";
   const unavailable = failedItems > 0 ? `I could not fully check ${failedItems} of your ${totalItems} items because a source was unavailable.` : "";
   if (!recall) {
-    const none = failedItems > 0 ? "None of the other items has a new recall since you last asked." : "None of your items has a new recall since you last asked.";
-    return [unavailable, none].filter(Boolean).join(" ");
+    const none = failedItems > 0 ? "None of the other items has a new recall since you last asked."
+      : firstCheck ? "On this first check, none of your items has a recall."
+        : "None of your items has a new recall since you last asked.";
+    const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
+    return [unavailable, none, empty].filter(Boolean).join(" ");
   }
-  const lead = totalItems === 1 ? "Your item has a new recall since you last asked."
-    : `${newItems} of your ${totalItems} items ${newItems === 1 ? "has" : "have"} a new recall since you last asked.`;
-  const tail = [unavailable, others(newRecallCount, Math.min(newRecallCount, 5))].filter(Boolean).join(" ");
+  const lead = totalItems === 1
+    ? (firstCheck ? "On this first check, your item has a new recall." : "Your item has a new recall since you last asked.")
+    : `${firstCheck ? "On this first check, " : ""}${newItems} of your ${totalItems} items ${newItems === 1 ? "has" : "have"} a new recall${firstCheck ? "." : " since you last asked."}`;
+  const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
+  const tail = [unavailable, empty, others(newRecallCount, Math.min(newRecallCount, 5))].filter(Boolean).join(" ");
   return fit(lead, recall, tail, input.query ?? "", label ?? "");
 }
 

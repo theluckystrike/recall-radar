@@ -6,11 +6,14 @@ import {
   addWatchItem,
   checkWatchList,
   classifyWatchItem,
+  createServer,
   itemSearch,
+  NEED_USER_ID,
   readWatchList,
   removeWatchItem,
   searchWatchItem,
   SEARCH_SOURCES,
+  watchUserId,
   type RecallSources,
   type WatchEnv,
   type WatchItem,
@@ -51,6 +54,16 @@ class FakeKV {
 
 function watchEnv(): WatchEnv {
   return { LIMITS: new FakeKV() };
+}
+
+type ToolResult = { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+type ToolHandler = (args: Record<string, unknown>, extra: unknown) => Promise<ToolResult>;
+
+function toolHandler(server: ReturnType<typeof createServer>, name: string): ToolHandler {
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: ToolHandler }> })._registeredTools;
+  const tool = tools[name];
+  if (!tool) throw new Error(`no tool ${name}`);
+  return tool.handler;
 }
 
 function makeRecall(overrides: Partial<Recall>): Recall {
@@ -146,6 +159,31 @@ test("remove takes one saved item off the list", async () => {
   assert.equal((await readWatchList(env, "user")).length, 1);
   const again = await removeWatchItem(env, "user", "crib");
   assert.equal(again.removed, false);
+});
+
+test("remove matches whole words and never a substring inside a word", async () => {
+  const object = new WatchStore({ storage: new FakeStorage() });
+  await object.add({ item: "Fisher-Price Rock n Play sleeper" });
+  const miss = await object.remove("ice");
+  assert.equal(miss.removed, false);
+  assert.equal((await object.list()).length, 1);
+});
+
+test("remove drops the words around the item and asks when several items match", async () => {
+  const object = new WatchStore({ storage: new FakeStorage() });
+  await object.add({ item: "crib" });
+  const removed = await object.remove("Remove the crib from my list");
+  assert.equal(removed.removed, true);
+  assert.equal(removed.item?.label, "crib");
+
+  await object.add({ item: "white crib" });
+  await object.add({ item: "crib mattress" });
+  const question = await object.remove("remove the crib from my list");
+  assert.equal(question.removed, false);
+  assert.match(question.message, /white crib/);
+  assert.match(question.message, /crib mattress/);
+  assert.match(question.message, /\?$/);
+  assert.equal((await object.list()).length, 2);
 });
 
 test("check runs every saved item in parallel", async () => {
@@ -383,4 +421,84 @@ test("the watch answer counts the items with new recalls and names the most impo
   const check = await checkWatchList(env, "user", lookup);
   assert.match(check.text, /2 of your 3 items have a new recall/);
   assert.match(check.text, /For your ByHeart formula/);
+});
+
+test("watch store keeps an add made while a slow check is running", async () => {
+  const object = new WatchStore({ storage: new FakeStorage() });
+  await object.add({ item: "crib" });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
+  const checking = object.check(async () => {
+    started();
+    await gate;
+    return { recalls: [], failed: false };
+  });
+  await began;
+  const added = await object.add({ item: "stroller" });
+  assert.ok(added.ok);
+  release();
+  const result = await checking;
+  const list = await object.list();
+  assert.deepEqual(list.map((item) => item.label).sort(), ["crib", "stroller"]);
+  assert.equal(result.totalItems, 2);
+});
+
+test("watch tools refuse to run without a user id and never use a shared list", async () => {
+  const env = watchEnv();
+  const server = createServer({ env });
+  const calls: Array<[string, Record<string, unknown>]> = [
+    ["add_to_watch_list", { item: "crib" }],
+    ["remove_from_watch_list", { item: "crib" }],
+    ["check_my_watch_list", {}],
+  ];
+  for (const [name, args] of calls) {
+    const result = await toolHandler(server, name)(args, {});
+    assert.equal(result.isError, true, name);
+    assert.equal(result.content?.[0]?.text, NEED_USER_ID, name);
+  }
+  assert.equal(watchUserId(undefined), "");
+  assert.equal((await readWatchList(env, undefined)).length, 0);
+  assert.equal((await readWatchList(env, "user-a")).length, 0);
+});
+
+test("vehicle aliases work in watch classification and over the MCP vehicle tool", async () => {
+  const chevy = classifyWatchItem({ year: 2019, make: "Chevy", model: "Silverado" });
+  assert.equal(chevy.label, "2019 Chevrolet Silverado 1500");
+  assert.equal(chevy.make, "chevrolet");
+  assert.equal(chevy.model, "silverado 1500");
+  const ford = classifyWatchItem({ year: 2021, make: "Ford", model: "f150" });
+  assert.equal(ford.label, "2021 Ford F-150");
+  assert.equal(ford.model, "f-150");
+  assert.equal(classifyWatchItem({ item: "2019 Chevy Silverado" }).model, "silverado 1500");
+
+  const original = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    urls.push(String(url));
+    return jsonResponse(200, { Count: 0, results: [] });
+  }) as typeof fetch;
+  try {
+    const server = createServer({});
+    const result = await toolHandler(server, "check_vehicle_recalls")({ year: 2019, make: "Chevy", model: "Silverado" }, {});
+    assert.equal(result.isError, undefined);
+    assert.equal(urls.length, 1);
+    assert.match(urls[0]!, /make=chevrolet/);
+    assert.match(urls[0]!, /model=silverado\+1500/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("check says no recalls found when sources answer zero and could not check only on failure", async () => {
+  const env = watchEnv();
+  await addWatchItem(env, "user", { year: 2019, make: "Chevy", model: "Silverado" });
+  const empty = await checkWatchList(env, "user", async () => ({ recalls: [], failed: false }));
+  assert.match(empty.text, /No recalls found for 2019 Chevrolet Silverado 1500\./);
+  assert.ok(!empty.text.includes("could not check"), empty.text);
+
+  const unavailable = await checkWatchList(env, "user", async () => ({ recalls: [], failed: true }));
+  assert.match(unavailable.text, /could not check/);
+  assert.ok(!unavailable.text.includes("No recalls found"), unavailable.text);
 });

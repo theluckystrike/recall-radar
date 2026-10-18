@@ -7,9 +7,13 @@ const WORRY = new Set(["safe", "safety", "unsafe", "dangerous", "ok", "okay", "f
   "is", "it", "are", "was", "were", "there", "any", "does", "do", "should", "i", "we", "our", "of", "can", "has", "have", "for", "me"]);
 
 export function cleanItem(query: string): string {
-  const words = query.toLowerCase().replace(/[^a-z0-9'&\- ]+/g, " ").split(/\s+/).filter(Boolean);
+  const words = query.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9'&\- ]+/g, " ").split(/\s+/).filter(Boolean);
   const kept = words.filter((w) => !WORRY.has(w));
-  return (kept.length ? kept : words).join(" ").slice(0, 60);
+  const cleaned = (kept.length ? kept : words).join(" ").slice(0, 60);
+  // Nothing readable is left (for example a query in a non-Latin script). Never search the whole database.
+  if (!cleaned) throw new RangeError("I need an item in English letters, for example ibuprofen.");
+  return cleaned;
 }
 
 /** "cantaloupes" -> "cantaloupe", "berries" -> "berry"; used only as a second try after zero results. */

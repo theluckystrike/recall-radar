@@ -14,9 +14,10 @@ import {
 
 /**
  * One Durable Object per user id holds the watch list. Reads and writes go through the object, which is
- * single-threaded and strongly consistent, so an add, a remove or a check cannot lose a concurrent write the
- * way an eventually consistent Workers KV key can. It extends the runtime RPC base class and delegates the
- * storage logic to WatchStore, which carries no runtime imports and is what the unit tests exercise.
+ * single-threaded and strongly consistent, so each call sees the list as it stands when that call runs. A check
+ * re-reads the list after its slow lookups and merges the seen recall ids by item id, so an add or a remove
+ * made while the check was waiting is kept. It extends the runtime RPC base class and delegates the storage
+ * logic to WatchStore, which carries no runtime imports and is what the unit tests exercise.
  */
 export class WatchListDO extends DurableObject<WatchEnv> {
   private readonly watch: WatchStore;

@@ -13,7 +13,7 @@ export type RouteResult =
   | { tool: "more"; args: Record<string, never> };
 
 /** Spoken alias -> NHTSA make name. Longest aliases are matched first. */
-const MAKES: Record<string, string> = {
+export const MAKES: Record<string, string> = {
   "acura": "acura", "alfa romeo": "alfa romeo", "alfa": "alfa romeo", "audi": "audi", "bmw": "bmw", "buick": "buick",
   "cadillac": "cadillac", "chevrolet": "chevrolet", "chevy": "chevrolet", "chrysler": "chrysler", "dodge": "dodge",
   "fiat": "fiat", "ford": "ford", "genesis": "genesis", "gmc": "gmc", "harley davidson": "harley-davidson", "harley": "harley-davidson",
@@ -25,11 +25,23 @@ const MAKES: Record<string, string> = {
 };
 
 /** Spoken model -> NHTSA model name, where they differ. */
-const MODEL_FIX: Record<string, string> = {
+export const MODEL_FIX: Record<string, string> = {
   "f150": "f-150", "f 150": "f-150", "f250": "f-250", "f 250": "f-250", "f350": "f-350", "f 350": "f-350",
   "crv": "cr-v", "cr v": "cr-v", "hrv": "hr-v", "hr v": "hr-v", "cx5": "cx-5", "cx 5": "cx-5", "cx9": "cx-9", "cx 9": "cx-9",
   "rav 4": "rav4", "silverado": "silverado 1500", "sierra": "sierra 1500", "model three": "model 3", "model why": "model y",
 };
+
+/** "Chevy" -> "chevrolet" and "Mercedes-Benz" -> "mercedes-benz", for tool input as well as speech. */
+export function normalizeMake(make: string): string {
+  const key = make.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  return MAKES[key] ?? key;
+}
+
+/** "f150" -> "f-150" and "Silverado" -> "silverado 1500", for tool input as well as speech. */
+export function normalizeModel(model: string): string {
+  const key = model.toLowerCase().replace(/\s+/g, " ").trim();
+  return MODEL_FIX[key] ?? MODEL_FIX[key.replace(/-/g, " ")] ?? key;
+}
 
 const FILLERS = new Set(["is", "my", "the", "a", "an", "any", "are", "there", "was", "were", "has", "have", "had", "been", "did", "they",
   "recall", "recalls", "recalled", "on", "for", "of", "check", "about", "please", "alexa", "tell", "me", "if", "whether", "our", "this", "that",

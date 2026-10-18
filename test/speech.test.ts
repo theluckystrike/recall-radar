@@ -103,7 +103,7 @@ test("speak: six recalls reads only the first, counts the rest", () => {
   const out = speak({ query: "widgets", source: "cpsc", total: 6, recalls });
   assert.equal(
     out,
-    'I found 6 recalls that mention widgets. The newest is from June 2023. It is Product 1. Hazard 1. Remedy 1. There are 5 more. Say "more" to hear the next 5.',
+    'I found 6 recalls that mention widgets. The newest is from June 2023. It is Product 1. Hazard 1. Remedy 1. There are 5 more. Say "more" to hear the next 4.',
   );
   assert.ok(!out.includes("Product 2"));
 });
@@ -311,6 +311,39 @@ test("speakWatch with several new items says the count then names the most impor
   const out = speakWatch({ totalItems: 3, newItems: 2, failedItems: 0, recall: r, newRecallCount: 2, query: "byheart formula", label: "ByHeart formula" });
   assert.match(out, /^2 of your 3 items have a new recall since you last asked\./);
   assert.match(out, /For your ByHeart formula/);
+});
+
+test("speakWatch says first check when nothing was seen before", () => {
+  const r = recall({ title: "Widget", hazard: "May cause injury.", remedy: "Contact the manufacturer." });
+  const out = speakWatch({ totalItems: 2, newItems: 1, failedItems: 1, recall: r, newRecallCount: 1, firstCheck: true });
+  assert.match(out, /^On this first check, 1 of your 2 items has a new recall\./);
+  assert.match(out, /I could not fully check 1 of your 2 items/);
+  assert.ok(!out.includes(".I could not"), out);
+});
+
+test("speakWatch on a first check with zero results says no recalls found", () => {
+  const out = speakWatch({ totalItems: 1, newItems: 0, failedItems: 0, newRecallCount: 0, firstCheck: true, emptyLabels: ["2019 Chevrolet Silverado 1500"] });
+  assert.match(out, /^On this first check, none of your items has a recall\./);
+  assert.match(out, /No recalls found for 2019 Chevrolet Silverado 1500\./);
+});
+
+test("speak: a remedy that repeats the hazard is said once", () => {
+  const r = recall({ title: "Lamp", hazard: "Stop using the lamp.", remedy: "Stop using the lamp." });
+  const out = speak({ query: "lamp", source: "cpsc", total: 1, recalls: [r] });
+  assert.equal((out.match(/Stop using the lamp\./g) ?? []).length, 1, out);
+});
+
+test("speakMany: the more count is capped by the 4 follow ups that are really read", () => {
+  const recalls = Array.from({ length: 15 }, (_, i) => recall({
+    id: String(i),
+    date: `2023-01-${String(15 - i).padStart(2, "0")}`,
+    title: `Product ${i}`,
+    hazard: "Hazard.",
+    remedy: "Remedy.",
+  }));
+  const out = speakMany([{ query: "widgets", source: "cpsc", total: 12, recalls }]);
+  assert.match(out, /Say "more" to hear the next 4\./);
+  assert.ok(!out.includes("next 11"), out);
 });
 
 // ---- speakMany ----

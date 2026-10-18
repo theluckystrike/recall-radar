@@ -1,5 +1,5 @@
 import { cleanItem } from "./query.js";
-import { route } from "./router.js";
+import { normalizeMake, normalizeModel, route } from "./router.js";
 import { followUps, speakWatch } from "./speech.js";
 import type { Recall } from "./types.js";
 
@@ -92,8 +92,10 @@ export function classifyWatchItem(input: WatchInput): WatchDraft {
       throw new TypeError("Give a vehicle with a model year between 1950 and next year, a make and a model.");
     }
     const year = input.year as number;
-    const label = `${year} ${titleCase(make)} ${titleCase(model)}`;
-    return { kind: "vehicle", label, query: label, year, make: make.toLowerCase(), model: model.toLowerCase() };
+    const fixedMake = normalizeMake(make);
+    const fixedModel = normalizeModel(model);
+    const label = `${year} ${titleCase(fixedMake)} ${titleCase(fixedModel)}`;
+    return { kind: "vehicle", label, query: label, year, make: fixedMake, model: fixedModel };
   }
   const text = (input.item ?? input.query ?? "").trim().replace(/\s+/g, " ").slice(0, 80);
   if (text.length < 2) throw new TypeError("Give an item phrase between 2 and 80 characters.");
@@ -116,11 +118,28 @@ function watchId(draft: WatchDraft): string {
   return base.toLowerCase().replace(/\s+/g, " ").slice(0, 120);
 }
 
-function watchMatches(item: WatchItem, needle: string): boolean {
-  const label = item.label.toLowerCase();
-  const query = item.query.toLowerCase();
-  return item.id === needle || label === needle || query === needle
-    || label.includes(needle) || query.includes(needle) || needle.includes(label) || needle.includes(query);
+const REMOVE_WORDS = /\b(?:remove|delete|take|drop|from|off|list|my|the)\b/gi;
+
+/** "Remove the crib from my list" -> "crib". */
+function removalPhrase(text: string): string {
+  const stripped = text.replace(REMOVE_WORDS, " ");
+  try {
+    return cleanItem(stripped);
+  } catch {
+    return "";
+  }
+}
+
+function wordTokens(text: string): string[] {
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/** Whole words only, so "ice" never matches inside "Fisher-Price". */
+function wholeWordMatch(item: WatchItem, needle: string): boolean {
+  const wanted = wordTokens(needle);
+  if (wanted.length === 0) return false;
+  const have = new Set([...wordTokens(item.label), ...wordTokens(item.query)]);
+  return wanted.every((word) => have.has(word));
 }
 
 function importance(a: Recall, b: Recall): number {
@@ -172,13 +191,19 @@ export class WatchStore {
   }
 
   async remove(text: string): Promise<RemoveWatchOutcome> {
-    const needle = cleanItem(text).toLowerCase();
+    const needle = removalPhrase(text).toLowerCase();
     const list = await this.items();
     if (!needle) return { removed: false, list, message: "Tell me the item to remove." };
-    const index = list.findIndex((item) => watchMatches(item, needle));
-    if (index < 0) return { removed: false, list, message: `I could not find ${text.trim()} on your watch list.` };
-    const item = list[index]!;
-    const next = list.filter((_, i) => i !== index);
+    const exact = list.filter((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
+    const matches = exact.length > 0 ? exact : list.filter((item) => wholeWordMatch(item, needle));
+    if (matches.length === 0) return { removed: false, list, message: `I could not find ${text.trim()} on your watch list.` };
+    if (matches.length > 1) {
+      const names = matches.map((item) => item.label);
+      const listText = names.length === 2 ? names.join(" or ") : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+      return { removed: false, list, message: `Which one do you want me to remove, ${listText}?` };
+    }
+    const item = matches[0]!;
+    const next = list.filter((entry) => entry.id !== item.id);
     await this.save(next);
     return { removed: true, item, list: next, message: `I removed ${item.label} from your watch list. It now holds ${next.length} item${next.length === 1 ? "" : "s"}.` };
   }
@@ -188,6 +213,7 @@ export class WatchStore {
     const run = lookup ?? this.lookup;
     if (!run) throw new Error("A recall lookup is required to check the watch list.");
     const items = await this.items();
+    const firstCheck = items.every((item) => item.seen.length === 0);
     const checked = await Promise.all(items.map(async (item) => {
       try {
         return { item, ...(await run(item)) };
@@ -195,20 +221,38 @@ export class WatchStore {
         return { item, recalls: [] as Recall[], failed: true };
       }
     }));
-    const fresh: Array<{ item: WatchItem; recall: Recall }> = [];
-    let failedItems = 0;
-    const updated = checked.map(({ item, recalls, failed }) => {
-      if (failed) failedItems++;
-      for (const recall of recalls) if (!item.seen.includes(recall.id)) fresh.push({ item, recall });
+    const checkedById = new Map<string, WatchItem>();
+    for (const { item, recalls } of checked) {
       const seen = [...new Set([...item.seen, ...recalls.map((recall) => recall.id)])].slice(-100);
+      checkedById.set(item.id, { ...item, seen });
+    }
+    // Re-read after the slow lookups: an add or a remove made while the check ran must survive.
+    const current = await this.items();
+    const currentById = new Map(current.map((item) => [item.id, item]));
+    const fresh: Array<{ item: WatchItem; recall: Recall }> = [];
+    const emptyLabels: string[] = [];
+    let failedItems = 0;
+    for (const { item, recalls, failed } of checked) {
+      const now = currentById.get(item.id);
+      if (!now) continue;
+      if (failed) failedItems++;
+      if (!failed && recalls.length === 0) emptyLabels.push(item.label);
+      for (const recall of recalls) {
+        if (!item.seen.includes(recall.id) && !now.seen.includes(recall.id)) fresh.push({ item, recall });
+      }
+    }
+    const merged = current.map((item) => {
+      const done = checkedById.get(item.id);
+      if (!done) return item;
+      const seen = [...new Set([...item.seen, ...done.seen])].slice(-100);
       return { ...item, seen };
     });
-    await this.save(updated);
+    await this.save(merged);
     fresh.sort((a, b) => importance(a.recall, b.recall));
     const recalls = fresh.map((entry) => entry.recall);
     const newItems = new Set(fresh.map((entry) => entry.item.id)).size;
-    const text = speakWatch({ totalItems: updated.length, newItems, failedItems, recall: recalls[0], newRecallCount: recalls.length, query: fresh[0]?.item.query, label: fresh[0]?.item.label });
-    return { totalItems: updated.length, newItems, failedItems, recalls, followUps: followUps(recalls), text, items: updated };
+    const text = speakWatch({ totalItems: merged.length, newItems, failedItems, recall: recalls[0], newRecallCount: recalls.length, query: fresh[0]?.item.query, label: fresh[0]?.item.label, firstCheck, emptyLabels });
+    return { totalItems: merged.length, newItems, failedItems, recalls, followUps: followUps(recalls), text, items: merged };
   }
 }
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { route } from "../src/router.js";
+import { normalizeMake, normalizeModel, route } from "../src/router.js";
 
 // Safety rule under test: no utterance may be routed to a source that cannot hold its recall.
 // check_all_recalls (CPSC + FDA food + FDA drug) is the safe default for anything that is not clearly a vehicle, food or medicine.
@@ -102,4 +102,11 @@ test("a generic synonym keeps the brand words the person said", () => {
   assert.deepEqual(route("is my ByHeart formula recalled")?.args, { query: "byheart formula" });
   assert.deepEqual(route("is my Similac baby formula safe")?.args, { query: "similac infant formula" });
   assert.deepEqual(route("is there a recall on baby formula")?.args, { query: "infant formula" });
+});
+
+test("vehicle aliases are reused by the server", () => {
+  assert.equal(normalizeMake("Chevy"), "chevrolet");
+  assert.equal(normalizeMake("Mercedes-Benz"), "mercedes-benz");
+  assert.equal(normalizeModel("f150"), "f-150");
+  assert.equal(normalizeModel("Silverado"), "silverado 1500");
 });

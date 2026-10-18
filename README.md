@@ -37,7 +37,7 @@ Serious recalls (FDA Class I, or NHTSA "park it outside") start with the word "I
 
 ## Watch list
 
-A household can save up to 10 vehicles, products, foods or medicines. Each user id has its own Durable Object, a small SQLite-backed store on Cloudflare Workers, found by `idFromName` of the sanitised user id. The object is single-threaded, so an add, a remove and a check run one at a time and never lose a write. The simulator creates a random id once, keeps it in the browser local storage and sends it with every request. An Alexa client can send `X-Alexa-User-Id`, and an MCP client can send `X-User-Id` or a `user_id` query parameter. When the `WATCH` binding is absent, for example in tests or local dev without it, an in-memory store per user id stands in.
+A household can save up to 10 vehicles, products, foods or medicines. Each user id has its own Durable Object, a small SQLite-backed store on Cloudflare Workers, found by `idFromName` of the sanitised user id. Each add and each remove is one call, so it sees the list as it stands when that call runs. A check re-reads the list after its slow lookups and merges the seen recall ids by item id, so an add or a remove made while a check was running is kept. The simulator creates a random id once, keeps it in the browser local storage and sends it with every request. An Alexa client can send `X-Alexa-User-Id`, and an MCP client can send `X-User-Id` or a `user_id` query parameter. When the `WATCH` binding is absent, for example in tests or local dev without it, an in-memory store per user id stands in.
 
 `check_my_watch_list` checks every saved item in parallel, reports only recall ids it has not reported for that item before, and answers in the same short spoken style. If a source fails, the answer says that source was unavailable and never reports it as no recalls.
 
@@ -71,7 +71,7 @@ Install the dependencies with `npm install`. Sign in to Cloudflare once with `np
 npm install
 npx wrangler kv namespace create LIMITS
 npx wrangler dev          # http://127.0.0.1:8787
-npx tsx --test test/*.test.ts             # 104 tests, no network
+npx tsx --test test/*.test.ts             # 117 tests, no network
 node test/live-mcp.mjs http://127.0.0.1:8787   # live MCP check against the real sources
 ```
 
@@ -80,6 +80,8 @@ Deploy with `npx wrangler deploy`. Connect any MCP client to `https://<your-work
 ## Limits
 
 The data covers U.S. recalls only. NHTSA needs a model year. CPSC and FDA searches match words in titles and product descriptions, so a brand name alone can miss a recall listed under a parent company. FDA enforcement reports have no page per recall, so the link goes to the FDA recall search. Recall Radar gives no medical or legal advice.
+
+The user id acts like a bearer secret. Anyone who knows a user id can read and change that watch list, so treat it like a password and do not share it. When no user id arrives, the watch tools refuse the request instead of falling back to a shared list.
 
 ## License
 

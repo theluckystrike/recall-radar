@@ -6,6 +6,7 @@ import { searchDrug, searchFood } from "./sources/fda.js";
 import { searchVehicle } from "./sources/nhtsa.js";
 import { followUps, speak, speakMany } from "./speech.js";
 import { cleanItem, singularPhrase } from "./query.js";
+import { normalizeMake, normalizeModel } from "./router.js";
 import {
   MemoryStorage,
   WatchStore,
@@ -71,10 +72,12 @@ function answer(result: SearchResult) {
 
 /** "accord ex" or "range rover sport" can be unknown to NHTSA: retry with fewer model words, at most twice. */
 async function vehicleWithRetry(make: string, model: string, year: number): Promise<SearchResult> {
-  const words = model.trim().split(/\s+/);
+  const fixedMake = normalizeMake(make);
+  const fixedModel = normalizeModel(model);
+  const words = fixedModel.trim().split(/\s+/);
   for (let n = words.length; n >= Math.max(1, words.length - 2); n--) {
     try {
-      return await searchVehicle(make, words.slice(0, n).join(" "), year);
+      return await searchVehicle(fixedMake, words.slice(0, n).join(" "), year);
     } catch (err) {
       const notFound = err instanceof SourceError && /HTTP 400/.test(err.message);
       if (!notFound || n === Math.max(1, words.length - 2)) throw err;
@@ -109,9 +112,10 @@ export async function itemSearch(search: (q: string) => Promise<SearchResult>, r
 
 /** Accept the simulator header, an Alexa user id header or a session id. Unsafe characters are dropped. */
 export function watchUserId(userId?: string | null): string {
-  const key = (userId ?? "").trim().replace(/[^A-Za-z0-9._:@-]/g, "").slice(0, 100);
-  return key || "default";
+  return (userId ?? "").trim().replace(/[^A-Za-z0-9._:@-]/g, "").slice(0, 100);
 }
+
+export const NEED_USER_ID = "I need a user id to keep a watch list.";
 
 /**
  * The exact search each single tool runs. The tools and the watch check both call these, so a saved item is
@@ -185,10 +189,12 @@ function fallbackStorage(env: WatchEnv, userId?: string | null): WatchStorage {
 }
 
 function watchTarget(env: WatchEnv, userId: string | null | undefined, lookup: WatchLookup = searchWatchItem): WatchTarget {
+  const key = watchUserId(userId);
+  if (!key) throw new Error(NEED_USER_ID);
   const namespace = env.WATCH;
   if (namespace) {
     // One object per sanitised user id: every operation is a single call, so the object applies it in order.
-    const stub = namespace.get(namespace.idFromName(watchUserId(userId))) as unknown as WatchRpc;
+    const stub = namespace.get(namespace.idFromName(key)) as unknown as WatchRpc;
     return {
       add: (input) => stub.add(input),
       remove: (text) => stub.remove(text),
@@ -196,7 +202,7 @@ function watchTarget(env: WatchEnv, userId: string | null | undefined, lookup: W
       check: () => stub.check(),
     };
   }
-  const local = new WatchStore({ storage: fallbackStorage(env, userId) });
+  const local = new WatchStore({ storage: fallbackStorage(env, key) });
   return {
     add: (input) => local.add(input),
     remove: (text) => local.remove(text),
@@ -206,23 +212,28 @@ function watchTarget(env: WatchEnv, userId: string | null | undefined, lookup: W
 }
 
 export async function readWatchList(env: WatchEnv | undefined, userId?: string | null): Promise<WatchItem[]> {
-  if (!env) return [];
+  if (!env || !watchUserId(userId)) return [];
   return watchTarget(env, userId).list();
 }
 
 export async function addWatchItem(env: WatchEnv | undefined, userId: string | null | undefined, input: WatchInput): Promise<AddWatchOutcome> {
   if (!env) return { ok: false, message: "The watch list is not available right now." };
+  if (!watchUserId(userId)) return { ok: false, message: NEED_USER_ID };
   return watchTarget(env, userId).add(input);
 }
 
 export async function removeWatchItem(env: WatchEnv | undefined, userId: string | null | undefined, text: string): Promise<RemoveWatchOutcome> {
   if (!env) return { removed: false, list: [], message: "The watch list is not available right now." };
+  if (!watchUserId(userId)) return { removed: false, list: [], message: NEED_USER_ID };
   return watchTarget(env, userId).remove(text);
 }
 
 export async function checkWatchList(env: WatchEnv | undefined, userId: string | null | undefined, lookup: WatchLookup = searchWatchItem): Promise<WatchCheck> {
   if (!env) {
     return { totalItems: 0, newItems: 0, failedItems: 0, recalls: [], followUps: [], items: [], text: "The watch list is not available right now." };
+  }
+  if (!watchUserId(userId)) {
+    return { totalItems: 0, newItems: 0, failedItems: 0, recalls: [], followUps: [], items: [], text: NEED_USER_ID };
   }
   return watchTarget(env, userId, lookup).check(lookup);
 }
@@ -233,6 +244,10 @@ function watchView(item: WatchItem) {
 
 function watchUnavailable() {
   return { content: [{ type: "text" as const, text: "The watch list is not available right now." }], isError: true };
+}
+
+function watchNoUser() {
+  return { content: [{ type: "text" as const, text: NEED_USER_ID }], isError: true };
 }
 
 function registerWatch(server: McpServer, env: WatchEnv | undefined, userId: string | null | undefined) {
@@ -251,6 +266,7 @@ function registerWatch(server: McpServer, env: WatchEnv | undefined, userId: str
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (input) => {
     if (!env) return watchUnavailable();
+    if (!watchUserId(userId)) return watchNoUser();
     const result = await addWatchItem(env, userId, input);
     if (!result.ok) return { content: [{ type: "text" as const, text: result.message }], isError: true };
     const text = `Added ${result.item.label} to your watch list. It now holds ${result.list.length} item${result.list.length === 1 ? "" : "s"}.`;
@@ -268,6 +284,7 @@ function registerWatch(server: McpServer, env: WatchEnv | undefined, userId: str
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async (input) => {
     if (!env) return watchUnavailable();
+    if (!watchUserId(userId)) return watchNoUser();
     const result = await removeWatchItem(env, userId, input.item ?? input.query ?? "");
     return { content: [{ type: "text" as const, text: result.message }], structuredContent: { removed: result.removed, items: result.list.map(watchView) } };
   });
@@ -280,6 +297,7 @@ function registerWatch(server: McpServer, env: WatchEnv | undefined, userId: str
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async () => {
     if (!env) return watchUnavailable();
+    if (!watchUserId(userId)) return watchNoUser();
     const result = await checkWatchList(env, userId);
     return {
       content: [{ type: "text" as const, text: result.text }],

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { cleanItem } from "../src/query.js";
+import { itemSearch } from "../src/server.js";
 import { searchFood } from "../src/sources/fda.js";
 
 test("cleanItem keeps only the item from a spoken worry", () => {
@@ -8,6 +9,22 @@ test("cleanItem keeps only the item from a spoken worry", () => {
   assert.equal(cleanItem("is my peanut butter safe to eat"), "peanut butter");
   assert.equal(cleanItem("is my crib safe"), "crib");
   assert.equal(cleanItem("does my ByHeart formula have a recall"), "byheart formula");
+});
+
+test("cleanItem strips accents and refuses text with no Latin letters", () => {
+  assert.equal(cleanItem("jalapeño"), "jalapeno");
+  assert.equal(cleanItem("crème brûlée"), "creme brulee");
+  assert.throws(() => cleanItem("ибупрофен"), /English letters/);
+});
+
+test("a query with no readable item is refused and never searches everything", async () => {
+  let calls = 0;
+  const search = async () => {
+    calls++;
+    return { query: "", source: "fda-drug" as const, total: 0, recalls: [] };
+  };
+  await assert.rejects(itemSearch(search, "ибупрофен"), /English letters/);
+  assert.equal(calls, 0);
 });
 
 test("FDA retries with every word required when the exact phrase finds nothing", async () => {
