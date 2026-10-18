@@ -95,10 +95,24 @@ async function searchFda(
   query: string,
   fetchFn: FetchFn,
 ): Promise<SearchResult> {
-  const url =
-    `${FDA_BASE}/${productType}/enforcement.json` +
-    `?search=product_description:"${encodeURIComponent(sanitizeQuery(query))}"` +
-    `&sort=report_date:desc&limit=5`;
+  const exact = await searchFdaOnce(productType, source, query, `product_description:"${encodeURIComponent(sanitizeQuery(query))}"`, fetchFn);
+  const words = sanitizeQuery(query).toLowerCase().split(" ").filter((w) => w.length >= 2);
+  if (exact.total > 0 || words.length < 2) return exact;
+  // The phrase search needs adjacent words, so "ByHeart formula" misses "ByHeart Whole Nutrition Infant Formula".
+  // Second try: every word must appear somewhere in the product description.
+  const all = words.slice(0, 4).map((w) => `product_description:${encodeURIComponent(w)}`).join("+AND+");
+  const loose = await searchFdaOnce(productType, source, query, all, fetchFn);
+  return loose.total > 0 ? { ...loose, query: `${query} (all words matched)` } : exact;
+}
+
+async function searchFdaOnce(
+  productType: "food" | "drug",
+  source: Source,
+  query: string,
+  search: string,
+  fetchFn: FetchFn,
+): Promise<SearchResult> {
+  const url = `${FDA_BASE}/${productType}/enforcement.json?search=${search}&sort=report_date:desc&limit=5`;
   let res: Response;
   try {
     res = await fetchFn(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });

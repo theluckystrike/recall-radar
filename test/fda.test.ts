@@ -105,7 +105,7 @@ test("throws SourceError on network failure", async () => {
 test("sanitizes the query and keeps the phrase quotes in the URL", async () => {
   let seen = "";
   const fetchFn: FetchFn = (async (url: string | URL | Request) => {
-    seen = String(url);
+    if (!seen) seen = String(url); // the exact phrase is always the first request
     return jsonResponse(200, { meta: { results: { total: 0 } }, results: [] });
   }) as unknown as FetchFn;
   await searchFood("  peanut, butter!!<> ", fetchFn);

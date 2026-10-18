@@ -15,10 +15,10 @@ Most people never hear about the recalls that apply to them. Recall notices go o
 | Tool | Source | Ask |
 |---|---|---|
 | `check_vehicle_recalls` | NHTSA | "Is my 2021 Ford F-150 recalled?" |
-| `search_product_recalls` | Consumer Product Safety Commission | "Is the Graco pack and play recalled?" |
+| `search_product_recalls` | Consumer Product Safety Commission | "Is the IKEA MALM dresser recalled?" |
 | `search_food_recalls` | FDA food enforcement reports | "Any recalls on peanut butter?" |
 | `search_drug_recalls` | FDA drug enforcement reports | "Was my ibuprofen recalled?" |
-| `check_all_recalls` | CPSC and both FDA lists in parallel | "Any recalls on baby formula?" |
+| `check_all_recalls` | CPSC and both FDA lists in parallel | "Any recalls on infant formula?" |
 
 Every tool returns a spoken answer of at most 70 words and the full structured result (title, date, hazard, remedy, official link, severity) for a screen or a follow-up.
 
@@ -59,7 +59,7 @@ The model's output is validated before use. If it is invalid, or the demo reache
 ```bash
 npm install
 npx wrangler dev          # http://127.0.0.1:8787
-npx tsx --test test/*.test.ts             # 66 tests, no network
+npx tsx --test test/*.test.ts             # 75 tests, no network
 node test/live-mcp.mjs http://127.0.0.1:8787   # live MCP check against the real sources
 ```
 

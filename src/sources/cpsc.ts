@@ -84,7 +84,13 @@ export async function searchProducts(query: string, fetchFn: FetchFn = fetch): P
   if (pool.length === 0) return { query, source: "cpsc", total: 0, recalls: [] };
   // Every distinctive word (the brand and model words searched alone) must appear as a whole word in the title;
   // the other meaningful words only rank. So "uppababy high chair" never returns another brand's high chair.
-  const whole = (title: string, w: string) => new RegExp(`\\b${w.replace(/[^a-z0-9]/g, "")}(e?s)?\\b`, "i").test(title);
+  // Hyphens, apostrophes, "+" and "&" become spaces on both sides, so "fisher-price rock 'n play" matches
+  // "Fisher-Price Rock 'n Play Sleepers" instead of looking for "fisherprice".
+  const norm = (t: string) => t.toLowerCase().replace(/'n\b/g, "n").replace(/[-'+&]/g, " ").replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+  const whole = (title: string, w: string) => {
+    const word = norm(w);
+    return word !== "" && new RegExp(`\\b${word}(e?s)?\\b`, "i").test(norm(title));
+  };
   const scoring = words.filter((w) => w.length >= 3 && !GENERIC.has(w) && !/^\d+$/.test(w));
   const score = (title: string) => scoring.filter((w) => whole(title, w.replace(/s$/, ""))).length;
   const required = (title: string) => singles.every((w) => whole(title, w.replace(/s$/, "")));

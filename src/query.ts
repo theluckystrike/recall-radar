@@ -3,7 +3,8 @@
 /** Words that describe the worry, not the item: "is zyrtec safe to take", "listeria outbreak cantaloupes". */
 const WORRY = new Set(["safe", "safety", "unsafe", "dangerous", "ok", "okay", "fine", "good", "bad", "still", "anymore", "now", "today",
   "take", "use", "eat", "drink", "to", "outbreak", "outbreaks", "listeria", "salmonella", "coli", "e", "contaminated", "contamination",
-  "recall", "recalls", "recalled", "warning", "warnings", "alert", "alerts", "news", "lately", "recently", "please", "my", "the", "a", "an"]);
+  "recall", "recalls", "recalled", "warning", "warnings", "alert", "alerts", "news", "lately", "recently", "please", "my", "the", "a", "an",
+  "is", "it", "are", "was", "were", "there", "any", "does", "do", "should", "i", "we", "our", "of", "can", "has", "have", "for", "me"]);
 
 export function cleanItem(query: string): string {
   const words = query.toLowerCase().replace(/[^a-z0-9'&\- ]+/g, " ").split(/\s+/).filter(Boolean);
