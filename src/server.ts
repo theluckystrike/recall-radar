@@ -5,6 +5,7 @@ import { searchProducts } from "./sources/cpsc.js";
 import { searchDrug, searchFood } from "./sources/fda.js";
 import { searchVehicle } from "./sources/nhtsa.js";
 import { followUps, speak, speakMany } from "./speech.js";
+import { CARD_MIME, CARD_NAME, CARD_URI, cardDocument } from "./card.js";
 import { cleanItem, singularPhrase } from "./query.js";
 import { normalizeMake, normalizeModel } from "./router.js";
 import {
@@ -51,9 +52,12 @@ const recallSchema = z.object({
   url: z.string(),
   severity: z.enum(["high", "medium", "low"]).optional(),
 });
-const resultSchema = z.object({ query: z.string(), source: z.enum(["nhtsa", "cpsc", "fda-food", "fda-drug"]), total: z.number(), recalls: z.array(recallSchema), followUps: z.array(z.string()).optional() });
+const resultSchema = z.object({ query: z.string(), source: z.enum(["nhtsa", "cpsc", "fda-food", "fda-drug"]), total: z.number(), recalls: z.array(recallSchema), recall: recallSchema.optional(), followUps: z.array(z.string()).optional() });
 const query = z.string().trim().min(2).max(60).describe("What to look up, in plain words, for example \"peanut butter\" or \"graco pack and play\".");
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+// MCP Apps linkage: a tool that returns recalls points at the ui:// card resource, so a host with
+// screen support renders the newest recall next to the spoken answer. A voice-only host ignores it.
+const cardMeta = { ui: { resourceUri: CARD_URI } };
 
 function sorry(err: unknown) {
   const message = err instanceof Error ? err.message : "";
@@ -67,7 +71,7 @@ function sorry(err: unknown) {
 }
 
 function answer(result: SearchResult) {
-  return { content: [{ type: "text" as const, text: speak(result) }], structuredContent: { ...result, followUps: followUps(result.recalls) } };
+  return { content: [{ type: "text" as const, text: speak(result) }], structuredContent: { ...result, recall: result.recalls[0], followUps: followUps(result.recalls) } };
 }
 
 /** "accord ex" or "range rover sport" can be unknown to NHTSA: retry with fewer model words, at most twice. */
@@ -293,15 +297,16 @@ function registerWatch(server: McpServer, env: WatchEnv | undefined, userId: str
     title: "Check my watch list",
     description: "Check every saved watch list item for recalls and report only recalls that were not reported before. Use for \"Check my watch list\" and \"Anything new on my list\".",
     inputSchema: z.object({}).strict(),
-    outputSchema: z.object({ totalItems: z.number(), newItems: z.number(), failedItems: z.number(), recalls: z.array(recallSchema), followUps: z.array(z.string()) }),
+    outputSchema: z.object({ totalItems: z.number(), newItems: z.number(), failedItems: z.number(), recalls: z.array(recallSchema), recall: recallSchema.optional(), followUps: z.array(z.string()) }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    _meta: cardMeta,
   }, async () => {
     if (!env) return watchUnavailable();
     if (!watchUserId(userId)) return watchNoUser();
     const result = await checkWatchList(env, userId);
     return {
       content: [{ type: "text" as const, text: result.text }],
-      structuredContent: { totalItems: result.totalItems, newItems: result.newItems, failedItems: result.failedItems, recalls: result.recalls, followUps: result.followUps },
+      structuredContent: { totalItems: result.totalItems, newItems: result.newItems, failedItems: result.failedItems, recalls: result.recalls, recall: result.recalls[0], followUps: result.followUps },
     };
   });
 }
@@ -317,6 +322,7 @@ function registerVehicle(server: McpServer) {
     }).strict(),
     outputSchema: resultSchema,
     annotations: readOnly,
+    _meta: cardMeta,
   }, async ({ year, make, model }) => {
     try { return answer(await SEARCH_SOURCES.vehicle(make, model, year)); } catch (err) { return sorry(err); }
   });
@@ -329,9 +335,24 @@ function registerSearches(server: McpServer) {
     ["search_drug_recalls", "Search medicine recalls", "Search FDA drug recalls for medicines, newest first. Use for \"Was my ibuprofen recalled?\". Not medical advice.", SEARCH_SOURCES.drug],
   ];
   for (const [name, title, description, search] of tools) {
-    server.registerTool(name, { title, description, inputSchema: z.object({ query }).strict(), outputSchema: resultSchema, annotations: readOnly },
+    server.registerTool(name, { title, description, inputSchema: z.object({ query }).strict(), outputSchema: resultSchema, annotations: readOnly, _meta: cardMeta },
       async ({ query: q }) => { try { return answer(await search(q)); } catch (err) { return sorry(err); } });
   }
+}
+
+/**
+ * The MCP Apps UI resource. Tools point at it through their _meta.ui link, and the host reads
+ * this document to render the newest recall beside the spoken answer. The text answers are not
+ * changed, so a voice-only client behaves exactly as before.
+ */
+function registerCard(server: McpServer) {
+  server.registerResource(CARD_NAME, CARD_URI, {
+    title: CARD_NAME,
+    description: "A visual card for the newest recall with the title, date, source, severity, hazard, remedy and the official link.",
+    mimeType: CARD_MIME,
+  }, (uri) => ({
+    contents: [{ uri: uri.href, mimeType: CARD_MIME, text: cardDocument() }],
+  }));
 }
 
 function registerAll(server: McpServer) {
@@ -339,8 +360,9 @@ function registerAll(server: McpServer) {
     title: "Check all recall sources",
     description: "When it is not clear whether something is a product, a food or a medicine, search CPSC, FDA food and FDA drug recalls together.",
     inputSchema: z.object({ query }).strict(),
-    outputSchema: z.object({ results: z.array(resultSchema), failed: z.array(z.enum(["cpsc", "fda-food", "fda-drug"])), followUps: z.array(z.string()) }),
+    outputSchema: z.object({ results: z.array(resultSchema), failed: z.array(z.enum(["cpsc", "fda-food", "fda-drug"])), recall: recallSchema.optional(), followUps: z.array(z.string()) }),
     annotations: readOnly,
+    _meta: cardMeta,
   }, async ({ query: q }) => {
     const sources = ["cpsc", "fda-food", "fda-drug"] as const;
     const settled = await Promise.allSettled([SEARCH_SOURCES.product(q), SEARCH_SOURCES.food(q), SEARCH_SOURCES.drug(q)]);
@@ -349,13 +371,14 @@ function registerAll(server: McpServer) {
     const merged = results.flatMap((r) => r.recalls).sort((a, b) => b.date.localeCompare(a.date));
     const failed = sources.filter((_, i) => settled[i]?.status === "rejected");
     if (results.length === 0) return sorry(new SourceError("all sources failed"));
-    return { content: [{ type: "text" as const, text: speakMany(results, [...failed]) }], structuredContent: { results, failed: [...failed], followUps: followUps(merged) } };
+    return { content: [{ type: "text" as const, text: speakMany(results, [...failed]) }], structuredContent: { results, failed: [...failed], recall: merged[0], followUps: followUps(merged) } };
   });
 }
 
 /** One fresh server per request: the endpoint is stateless. */
 export function createServer(options: ServerOptions = {}): McpServer {
   const server = new McpServer({ name: NAME, version: VERSION });
+  registerCard(server);
   registerVehicle(server);
   registerSearches(server);
   registerAll(server);

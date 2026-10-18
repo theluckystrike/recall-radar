@@ -7,6 +7,8 @@ description: Answer household questions about safety recalls on vehicles, consum
 
 Use the Recall Radar MCP server at `https://recall-radar.lipmichal.workers.dev/mcp` (Streamable HTTP).
 
+Some hosts render a visual recall card next to the spoken answer. The card is the MCP Apps resource at `ui://recall-radar/card`, linked from the search tools and from `check_my_watch_list`, and the newest recall is in `structuredContent.recall`. When a host shows the card, still read the text answer aloud exactly as it is, and offer the official link from the structured result when the person wants details.
+
 ## Pick the tool
 
 | The person asks about | Tool | Arguments |

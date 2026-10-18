@@ -25,6 +25,8 @@ Most people never hear about the recalls that apply to them. Recall notices go o
 
 Every tool returns a spoken answer of at most 70 words and the full structured result (title, date, hazard, remedy, official link, severity) for a screen or a follow-up.
 
+The newest recall is also offered as a visual recall card, an MCP Apps UI resource at `ui://recall-radar/card` with the `text/html;profile=mcp-app` media type. The search tools and `check_my_watch_list` point at it through their tool metadata, and each result carries the newest recall in `structuredContent`, so a screen or an MCP App host can show the title, date, source, severity, hazard, remedy and the official link beside the spoken answer. The card is one small self-contained HTML document with inline styles only, no network scripts and no tracking, and the spoken answers are unchanged.
+
 ## Voice design
 
 - One recall is read in full, the newest one. Then the count of the others and an offer to hear the next few.
@@ -71,7 +73,7 @@ Install the dependencies with `npm install`. Sign in to Cloudflare once with `np
 npm install
 npx wrangler kv namespace create LIMITS
 npx wrangler dev          # http://127.0.0.1:8787
-npx tsx --test test/*.test.ts             # 117 tests, no network
+npx tsx --test test/*.test.ts             # 125 tests, no network
 node test/live-mcp.mjs http://127.0.0.1:8787   # live MCP check against the real sources
 ```
 
