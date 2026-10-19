@@ -623,6 +623,39 @@ test("the sub-model hint never names a searched model and skips PHEV style varia
   assert.ok(!urls.some((u) => u.includes("AMG")), "the model named in the hint was not searched");
 });
 
+test("a 2019 GLC counts recalls filed only under the spaced model name GLC 300", async () => {
+  const urls: string[] = [];
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "GLC-Class" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [{ model: "GLC 300" }] }), { status: 200 });
+    }
+    if (/model=GLC\+300(?:&|$)/.test(url)) {
+      return new Response(
+        JSON.stringify({ Count: 2, results: [recallRecord("A"), recallRecord("B")] }),
+        { status: 200 }
+      );
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+
+  const result = await searchVehicle("mercedes-benz", "glc-class", 2019, fetchFn);
+
+  assert.equal(result.total, 2, "both campaigns filed under GLC 300 are counted");
+  assert.deepEqual(result.recalls.map((r) => r.id).sort(), ["A", "B"]);
+  assert.equal(result.query, "2019 Mercedes-Benz GLC-Class");
+  assert.ok(urls.some((u) => /model=GLC300(?:&|$)/.test(u)), "the joined spelling was tried");
+  assert.ok(urls.some((u) => /model=GLC\+300(?:&|$)/.test(u)), "the spaced spelling was tried");
+
+  const out = speak(result);
+  assert.match(out, /GLC 300/, out);
+  assert.doesNotMatch(out, /Glc-Class/, out);
+});
+
 test("a model the speaker or NHTSA writes in capitals keeps them (2021 Lexus RX)", async () => {
   const body = {
     Count: 1,

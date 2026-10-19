@@ -7,7 +7,8 @@ const VPIC_ENDPOINT = "https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeY
 const NHTSA_PAGE = "https://www.nhtsa.gov/recalls?nhtsaId=";
 const MIN_YEAR = 1950;
 const MAX_RESULTS = 5;
-const MAX_SUBMODEL_CALLS = 6;
+// Six numbers, each tried joined and spaced ("GLC300" and "GLC 300"), so twelve calls at most.
+const MAX_SUBMODEL_CALLS = 12;
 const MAX_MODEL_OPTIONS = 5;
 const MAX_TITLE = 120;
 const MAX_HAZARD = 300;
@@ -261,6 +262,12 @@ function titleCase(value: string): string {
  * characters or fewer or carries a digit ("CX-5"). Anything else is title cased ("Accord").
  */
 function displayModelToken(token: string, known?: string): string {
+  // vPIC spells a family "GLC-Class": keep the agency's capitals instead of title casing to "Glc-Class".
+  const family = /^([A-Za-z]+)-class$/i.exec(token);
+  const familyStem = family?.[1];
+  if (familyStem && familyStem === familyStem.toUpperCase()) {
+    return `${familyStem}-Class`;
+  }
   const letters = token.replace(/[^A-Za-z]/g, "");
   if (letters && letters === letters.toUpperCase()) return token;
   const knownText = (known ?? "").trim();
@@ -328,10 +335,15 @@ function classStem(family: string): string | null {
   return /^([a-z]+)class$/.exec(modelKey(family))?.[1] ?? null;
 }
 
-/** C-Class -> C300, C250, C350, C400, C450, C43: the sub-models NHTSA really files C-Class recalls under. */
+/**
+ * C-Class -> C300 and C 300, C250 and C 250, and so on. NHTSA files a numbered class model
+ * sometimes joined and sometimes spaced, so both spellings of each number are tried.
+ */
 function classVariants(family: string): string[] {
   const stem = classStem(family);
-  return stem ? CLASS_NUMBERS.map((n) => `${stem.toUpperCase()}${n}`) : [];
+  if (!stem) return [];
+  const upper = stem.toUpperCase();
+  return CLASS_NUMBERS.flatMap((n) => [`${upper}${n}`, `${upper} ${n}`]);
 }
 
 /** Body and drivetrain variants are not a model to point at: "C-CLASS PHEV" is not a different car. */
@@ -490,7 +502,8 @@ function displayModel(make: string, spoken: string, match: string): string {
 }
 
 function vehicleQuery(make: string, model: string, year: number): string {
-  return `${year} ${titleCase(make)} ${displayModelName(model)}`;
+  // A vPIC name is already spelled the way the agency writes it ("GLC-Class"), so it is not recased.
+  return `${year} ${titleCase(make)} ${model}`;
 }
 
 function withQuery(result: SearchResult, query: string): SearchResult {
@@ -622,15 +635,22 @@ async function searchRelatedModels(
     seenRelated.add(nameKey);
     relatedModels.push(name);
   }
-  // The numbered models a "-Class" family is really filed under are tried first, so the cap reaches
-  // them even when the lists name several other versions of the family.
+  // The numbered models a "-Class" family is really filed under are tried before other versions of the
+  // family, so the cap reaches them. Both spellings of each number go first, joined then spaced, since
+  // either may be the one NHTSA filed the recalls under.
+  const joined = synthesized.filter((name) => !/\s/.test(name));
+  const spaced = synthesized.filter((name) => /\s/.test(name));
   const candidates: string[] = [];
-  const seenCandidates = new Set<string>([key]);
-  for (const name of [...synthesized, ...related]) {
-    const nameKey = modelKey(name);
-    if (!nameKey || seenCandidates.has(nameKey)) continue;
-    seenCandidates.add(nameKey);
+  const seenCandidates = new Set<string>();
+  const addCandidate = (name: string) => {
+    const callKey = name.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!callKey || seenCandidates.has(callKey)) return;
+    seenCandidates.add(callKey);
     candidates.push(name);
+  };
+  for (const name of [...joined, ...spaced, ...related]) {
+    if (modelKey(name) === key) continue;
+    addCandidate(name);
   }
   const searched = candidates.slice(0, MAX_SUBMODEL_CALLS);
   const settled = await Promise.allSettled(
@@ -653,12 +673,16 @@ async function searchRelatedModels(
     const found = result.value.recalls;
     if (found.length === 0) continue;
     if (isNumberedClassModel(result.value.model, mergeKeys)) {
-      filedUnder.push(result.value.model);
+      let added = 0;
       for (const recall of found) {
         if (seen.has(recall.id)) continue;
         seen.add(recall.id);
         recalls.push(recall);
+        added++;
       }
+      // Only the spelling that actually brought new campaigns is named, so "C300" and "C 300" do not
+      // both appear when they are the same car with the same recalls.
+      if (added > 0) filedUnder.push(result.value.model);
     } else {
       // A different car that shares the name: named separately, never merged into the user's total.
       relatedRecalls.push({ model: result.value.model, count: found.length });
@@ -668,7 +692,16 @@ async function searchRelatedModels(
   if (failures > 0 && recalls.length === 0) {
     throw new SourceError(`${VEHICLE_SERVICE}: a related model check failed`);
   }
-  return { related: relatedModels, searched, filedUnder, relatedRecalls, recalls: recalls.sort(byRecency) };
+  // The spoken list names each number once: the spaced spelling is only an extra way to file it.
+  const spokenSearched: string[] = [];
+  const seenSearched = new Set<string>();
+  for (const name of searched) {
+    const searchedKey = modelKey(name);
+    if (seenSearched.has(searchedKey)) continue;
+    seenSearched.add(searchedKey);
+    spokenSearched.push(name);
+  }
+  return { related: relatedModels, searched: spokenSearched, filedUnder, relatedRecalls, recalls: recalls.sort(byRecency) };
 }
 
 export async function searchVehicle(
