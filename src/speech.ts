@@ -187,8 +187,11 @@ function vehicleNoRecallAnswer(result: SearchResult): string {
   const note = vehicleSearchNote(result);
   const searched = note?.searchedModels ?? [];
   const checked = searched.length > 0 ? `, after checking ${labelList(searched)}` : "";
-  const hint = note && note.relatedModels.length > 1 && note.example
-    ? ` Recalls are often filed under a specific model, such as ${note.example} for a ${note.model}, so check the exact model on the registration too.`
+  // The example names a model that was NOT already searched and is not a body variant like PHEV.
+  const hint = note && note.relatedModels.length > 1
+    ? note.example
+      ? ` Recalls are often filed under a specific model, such as ${note.example} for a ${note.model}, so check the exact model on the registration too.`
+      : ` Recalls are often filed under a specific model, so check the exact model on the registration too.`
     : "";
   return `NHTSA lists no recalls filed under the name ${spokenQuery(result.query)}${checked}. That does not prove the car is safe.${hint}`;
 }
@@ -204,8 +207,12 @@ export function speak(result: SearchResult): string {
   }
   const matched = /\(matched by /.test(result.query);
   const note = result.source === "nhtsa" ? vehicleSearchNote(result) : undefined;
-  const searched = note && note.searchedModels.length > 0 ? ` I also searched ${labelList(note.searchedModels)}.` : "";
-  const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${spokenQuery(result.query)}.${searched}`
+  // A family answer says which sub-models the recalls really came from (C300, C450); only when that is
+  // unknown does it list everything it searched.
+  const filedUnder = note?.filedUnder ?? [];
+  const filed = filedUnder.length > 0 ? `, filed under ${labelList(filedUnder)}` : "";
+  const searched = !filed && note && note.searchedModels.length > 0 ? ` I also searched ${labelList(note.searchedModels)}.` : "";
+  const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${spokenQuery(result.query)}${filed}.${searched}`
     : `I found ${count(result.total, "recall")} ${matched ? "matching" : mention(result.total)} ${spokenQuery(result.query)}.`;
   return spoken(fit(lead, first, others(result.total, result.recalls.length), spokenQuery(result.query)));
 }

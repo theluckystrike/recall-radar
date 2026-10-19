@@ -54,6 +54,7 @@ type FetchFn = typeof fetch;
 interface NhtsaRecord {
   NHTSACampaignNumber?: unknown;
   ReportReceivedDate?: unknown;
+  Model?: unknown;
   Component?: unknown;
   Summary?: unknown;
   Consequence?: unknown;
@@ -91,6 +92,8 @@ export interface VehicleSearchNote {
   model: string;
   relatedModels: string[];
   searchedModels: string[];
+  /** The searched sub-models that actually had recalls, so the answer can say what they were filed under. */
+  filedUnder: string[];
   example?: string;
 }
 
@@ -230,6 +233,70 @@ function titleCase(value: string): string {
     .join(" ");
 }
 
+/**
+ * One model token as it should be written: a token the speaker gave in capitals ("RX", "RX350",
+ * "F-150") stays as it is, and a token a maker spells in capitals stays in capitals when it is four
+ * characters or fewer or carries a digit ("CX-5"). Anything else is title cased ("Accord").
+ */
+function displayModelToken(token: string, known?: string): string {
+  const letters = token.replace(/[^A-Za-z]/g, "");
+  if (letters && letters === letters.toUpperCase()) return token;
+  const knownText = (known ?? "").trim();
+  const knownLetters = knownText.replace(/[^A-Za-z]/g, "");
+  const compact = token.replace(/[^A-Za-z0-9]/g, "");
+  if (knownLetters && knownLetters === knownLetters.toUpperCase() && (compact.length <= 4 || /\d/.test(token))) {
+    return knownText.toUpperCase();
+  }
+  return titleCase(token);
+}
+
+/** The model spelling for the answer, keeping the capitals the speaker or the agency used ("2021 Lexus RX"). */
+function displayModelName(spoken: string, known?: unknown): string {
+  const knownTokens = (typeof known === "string" ? known : "").trim().split(/\s+/);
+  return spoken
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token, i) => displayModelToken(token, knownTokens[i]))
+    .join(" ");
+}
+
+/** The model NHTSA filed the newest record under, spelled the way the agency writes it. */
+function agencyModel(raw: unknown[]): string | undefined {
+  for (const entry of raw) {
+    if (!isNhtsaRecord(entry) || !isValidRecord(entry)) continue;
+    if (typeof entry.Model === "string" && entry.Model.trim()) return entry.Model.trim();
+  }
+  return undefined;
+}
+
+/** The numbers a Mercedes-style "-Class" family is filed under: 300, 250, 350, 400, 450 and 43. */
+const CLASS_NUMBERS = ["300", "250", "350", "400", "450", "43"];
+
+/** The letter stem of a "-Class"/" Class" family ("C", "GLC"), or null. "CLA"/"CLS" stay their own models. */
+function classStem(family: string): string | null {
+  return /^([a-z]+)class$/.exec(modelKey(family))?.[1] ?? null;
+}
+
+/** C-Class -> C300, C250, C350, C400, C450, C43: the sub-models NHTSA really files C-Class recalls under. */
+function classVariants(family: string): string[] {
+  const stem = classStem(family);
+  return stem ? CLASS_NUMBERS.map((n) => `${stem.toUpperCase()}${n}`) : [];
+}
+
+/** Body and drivetrain variants are not a model to point at: "C-CLASS PHEV" is not a different car. */
+const VARIANT_WORD = /\b(?:PHEV|HYBRID|COUPE|CABRIO|CONVERTIBLE)\b/i;
+
+/** A model the hint may name: not the family itself, not already searched, not a variant such as PHEV. */
+function hintExample(related: string[], searched: string[], family: string): string | undefined {
+  const familyKey = modelKey(family);
+  const searchedKeys = new Set(searched.map(modelKey));
+  return related.find((name) => {
+    const key = modelKey(name);
+    return key !== familyKey && !searchedKeys.has(key) && !VARIANT_WORD.test(name);
+  });
+}
+
 function isNhtsaRecord(value: unknown): value is NhtsaRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -252,7 +319,7 @@ function toRecall(record: NhtsaRecord, make: string, model: string, year: number
     id,
     date: parseDate(record.ReportReceivedDate) ?? "",
     title: clean(
-      `${component} (${year} ${titleCase(make)} ${titleCase(model)})`,
+      `${component} (${year} ${titleCase(make)} ${displayModelName(model, record.Model)})`,
       MAX_TITLE
     ),
     hazard,
@@ -363,7 +430,7 @@ function displayModel(make: string, spoken: string, match: string): string {
 }
 
 function vehicleQuery(make: string, model: string, year: number): string {
-  return `${year} ${titleCase(make)} ${model}`;
+  return `${year} ${titleCase(make)} ${displayModelName(model)}`;
 }
 
 function withQuery(result: SearchResult, query: string): SearchResult {
@@ -450,15 +517,16 @@ function relatedModel(name: string, familyKey: string): boolean {
 }
 
 /**
- * Search the models listed under a family name (RX gives RX 350, RX 350L and so on). The number of
- * outbound sub-model calls is capped, and recalls are merged by campaign number.
+ * Search the models listed under a family name (RX gives RX 350, RX 350L and so on). A "-Class"
+ * family also tries the numbered models NHTSA really files it under (C300, C450, ...), which neither
+ * list names. The number of outbound sub-model calls is capped, and recalls are merged by campaign.
  */
 async function searchRelatedModels(
   make: string,
   family: string,
   year: number,
   fetchFn: FetchFn
-): Promise<{ related: string[]; searched: string[]; recalls: Recall[] }> {
+): Promise<{ related: string[]; searched: string[]; filedUnder: string[]; recalls: Recall[] }> {
   const key = modelKey(family);
   // The products list names the versions NHTSA files recalls under. vPIC adds any family name it
   // lists separately, so the hint reflects every related model either list knows.
@@ -475,19 +543,43 @@ async function searchRelatedModels(
     names.push(name);
   }
   const related = names.filter((name) => relatedModel(name, key));
-  const searched = related.filter((name) => modelKey(name) !== key).slice(0, MAX_SUBMODEL_CALLS);
+  const synthesized = classVariants(family);
+  const relatedModels: string[] = [];
+  const seenRelated = new Set<string>();
+  for (const name of [...related, ...synthesized]) {
+    const nameKey = modelKey(name);
+    if (!nameKey || seenRelated.has(nameKey)) continue;
+    seenRelated.add(nameKey);
+    relatedModels.push(name);
+  }
+  // The numbered models a "-Class" family is really filed under are tried first, so the cap reaches
+  // them even when the lists name several other versions of the family.
+  const candidates: string[] = [];
+  const seenCandidates = new Set<string>([key]);
+  for (const name of [...synthesized, ...related]) {
+    const nameKey = modelKey(name);
+    if (!nameKey || seenCandidates.has(nameKey)) continue;
+    seenCandidates.add(nameKey);
+    candidates.push(name);
+  }
+  const searched = candidates.slice(0, MAX_SUBMODEL_CALLS);
   const settled = await Promise.allSettled(
-    searched.map(async (model) => toRecalls((await fetchRecalls(make, model, year, fetchFn)).raw, make, model, year))
+    searched.map(async (model) => ({
+      model,
+      recalls: toRecalls((await fetchRecalls(make, model, year, fetchFn)).raw, make, model, year),
+    }))
   );
   const recalls: Recall[] = [];
   const seen = new Set<string>();
+  const filedUnder: string[] = [];
   let failures = 0;
   for (const result of settled) {
     if (result.status === "rejected") {
       failures++;
       continue;
     }
-    for (const recall of result.value) {
+    if (result.value.recalls.length > 0) filedUnder.push(result.value.model);
+    for (const recall of result.value.recalls) {
       if (seen.has(recall.id)) continue;
       seen.add(recall.id);
       recalls.push(recall);
@@ -497,7 +589,7 @@ async function searchRelatedModels(
   if (failures > 0 && recalls.length === 0) {
     throw new SourceError(`${VEHICLE_SERVICE}: a related model check failed`);
   }
-  return { related, searched, recalls: recalls.sort(byRecency) };
+  return { related: relatedModels, searched, filedUnder, recalls: recalls.sort(byRecency) };
 }
 
 export async function searchVehicle(
@@ -514,7 +606,7 @@ export async function searchVehicle(
 
   if (first.raw.length > 0) {
     return {
-      query: `${year} ${titleCase(make)} ${titleCase(model)}`,
+      query: `${year} ${titleCase(make)} ${displayModelName(model, agencyModel(first.raw))}`,
       source: "nhtsa",
       total: first.total,
       recalls: toRecalls(first.raw, make, model, year).sort(byRecency).slice(0, MAX_RESULTS),
@@ -535,6 +627,7 @@ export async function searchVehicle(
       model: canonical,
       relatedModels: found?.relatedModels ?? [],
       searchedModels: found?.searchedModels ?? [],
+      filedUnder: found?.filedUnder ?? [],
       example: found?.example,
     });
     return result;
@@ -545,7 +638,8 @@ export async function searchVehicle(
     model: canonical,
     relatedModels: related.related,
     searchedModels: related.searched,
-    example: related.related.find((name) => modelKey(name) !== modelKey(match)) ?? related.related[0],
+    filedUnder: related.filedUnder,
+    example: hintExample(related.related, related.searched, match),
   };
   const result: SearchResult = related.recalls.length > 0
     ? {

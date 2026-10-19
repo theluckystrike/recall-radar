@@ -529,9 +529,11 @@ test("a family name with no sub-model recalls says what was searched and never c
   const result = await searchVehicle("mercedes-benz", "c-class", 2021, fetchFn);
   assert.equal(result.total, 0);
   const out = speak(result);
-  assert.match(out, /after checking C300 and C43/, out);
+  assert.match(out, /after checking C300, C250, C350, C400, C450 and C43/, out);
   assert.match(out, /That does not prove the car is safe/, out);
-  assert.match(out, /such as C300 for a C-Class/, out);
+  // C300 was already searched, so the hint must not name it back: it drops the "such as" clause.
+  assert.doesNotMatch(out, /such as/, out);
+  assert.match(out, /check the exact model on the registration/, out);
 });
 
 test("an ambiguous prefix asks which real vPIC model instead of refusing", async () => {
@@ -567,4 +569,78 @@ test("a single prefix match speaks and returns the vPIC name, never the misheard
   assert.equal(result.query, "2019 Honda Accord");
   assert.ok(!result.query.includes("Accordion"), result.query);
   assert.match(speak(result), /for the 2019 Honda Accord\./, speak(result));
+});
+
+test("a C-Class searches the numbered models C300 and C450 and names what the recalls were filed under", async () => {
+  const urls: string[] = [];
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "C-Class" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [{ model: "C-CLASS PHEV" }] }), { status: 200 });
+    }
+    if (/model=C300(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 2, results: [recallRecord("A"), recallRecord("B")] }), { status: 200 });
+    }
+    if (/model=C450(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 2, results: [recallRecord("B"), recallRecord("C")] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+  const result = await searchVehicle("mercedes-benz", "c-class", 2016, fetchFn);
+  assert.equal(result.total, 3, "the shared campaign number B is merged once");
+  assert.deepEqual(result.recalls.map((r) => r.id).sort(), ["A", "B", "C"]);
+  assert.equal(result.query, "2016 Mercedes-Benz C-Class");
+  assert.ok(urls.some((u) => /model=C300(?:&|$)/.test(u)), "C300 was searched");
+  assert.ok(urls.some((u) => /model=C450(?:&|$)/.test(u)), "C450 was searched");
+  const out = speak(result);
+  assert.match(out, /filed under C300 and C450/, out);
+  assert.doesNotMatch(out, /PHEV/, out);
+});
+
+test("the sub-model hint never names a searched model and skips PHEV style variants", async () => {
+  const urls: string[] = [];
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "C-Class" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [{ model: "C300" }, { model: "C43" }, { model: "C-CLASS PHEV" }, { model: "C450 AMG" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+  const result = await searchVehicle("mercedes-benz", "c-class", 2019, fetchFn);
+  assert.equal(result.total, 0);
+  const out = speak(result);
+  assert.match(out, /such as C450 AMG for a C-Class/, out);
+  assert.doesNotMatch(out, /PHEV/, out);
+  assert.doesNotMatch(out, /such as C300/, out);
+  assert.ok(!urls.some((u) => u.includes("AMG")), "the model named in the hint was not searched");
+});
+
+test("a model the speaker or NHTSA writes in capitals keeps them (2021 Lexus RX)", async () => {
+  const body = {
+    Count: 1,
+    results: [
+      {
+        NHTSACampaignNumber: "99V000001",
+        ReportReceivedDate: "01/02/2021",
+        Model: "RX",
+        Component: "BRAKES",
+        Consequence: "The brakes may fail.",
+        Remedy: "Dealers will replace them.",
+      },
+    ],
+  };
+  const spoken = await searchVehicle("lexus", "RX", 2021, ok(body));
+  assert.equal(spoken.query, "2021 Lexus RX");
+  assert.equal(spoken.recalls[0]?.title, "Brakes (2021 Lexus RX)");
+
+  const lower = await searchVehicle("lexus", "rx", 2021, ok(body));
+  assert.equal(lower.query, "2021 Lexus RX", "the capitals NHTSA uses are kept");
 });
