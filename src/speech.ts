@@ -1,4 +1,5 @@
 import { byRecency } from "./rank.js";
+import { vehicleSearchNote } from "./sources/nhtsa.js";
 import { stripListNumber } from "./text.js";
 import type { Recall, SearchResult, Source } from "./types";
 
@@ -181,17 +182,30 @@ export function followUps(recalls: Recall[]): string[] {
   });
 }
 
+/** A family name with no recalls says what was searched, and only hints at sub-models when the make has several. */
+function vehicleNoRecallAnswer(result: SearchResult): string {
+  const note = vehicleSearchNote(result);
+  const searched = note?.searchedModels ?? [];
+  const checked = searched.length > 0 ? `, after checking ${labelList(searched)}` : "";
+  const hint = note && note.relatedModels.length > 1 && note.example
+    ? ` Recalls are often filed under a specific model, such as ${note.example} for a ${note.model}, so check the exact model on the registration too.`
+    : "";
+  return `NHTSA lists no recalls filed under the name ${spokenQuery(result.query)}${checked}. That does not prove the car is safe.${hint}`;
+}
+
 export function speak(result: SearchResult): string {
   const first = result.recalls[0];
   if (result.total <= 0 || !first) {
     if (result.source === "nhtsa") {
       // NHTSA often files recalls under a specific model (C300 for a C-Class), so a family name can show none.
-      return spoken(`NHTSA lists no recalls filed under the name ${spokenQuery(result.query)}. Recalls are often filed under a specific model, such as C300 for a C-Class, so check the exact model on the registration too. That does not prove the car is safe.`);
+      return spoken(vehicleNoRecallAnswer(result));
     }
     return spoken(`I found no recalls for ${spokenQuery(result.query)} in ${SOURCE_NAMES[result.source]}. That does not prove it is safe, only that nothing is listed.`);
   }
   const matched = /\(matched by /.test(result.query);
-  const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${spokenQuery(result.query)}.`
+  const note = result.source === "nhtsa" ? vehicleSearchNote(result) : undefined;
+  const searched = note && note.searchedModels.length > 0 ? ` I also searched ${labelList(note.searchedModels)}.` : "";
+  const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${spokenQuery(result.query)}.${searched}`
     : `I found ${count(result.total, "recall")} ${matched ? "matching" : mention(result.total)} ${spokenQuery(result.query)}.`;
   return spoken(fit(lead, first, others(result.total, result.recalls.length), spokenQuery(result.query)));
 }
@@ -207,6 +221,7 @@ export interface WatchSpeech {
   label?: string;
   firstCheck?: boolean;
   emptyLabels?: string[];
+  emptyVehicles?: string[];
 }
 
 function labelList(labels: string[]): string {
@@ -214,9 +229,24 @@ function labelList(labels: string[]): string {
   return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
+/**
+ * A watched vehicle with nothing listed gets the same honest wording as a direct check. A flat
+ * "No recalls found" would read as proof that the car is safe.
+ */
+function emptySentence(emptyLabels: string[], emptyVehicles: string[]): string {
+  const parts: string[] = [];
+  if (emptyVehicles.length > 0) {
+    parts.push(`NHTSA lists no recalls filed under the name ${labelList(emptyVehicles)}. That does not prove the car is safe.`);
+  }
+  if (emptyLabels.length > 0) {
+    parts.push(`No recalls found for ${labelList(emptyLabels)}.`);
+  }
+  return parts.join(" ");
+}
+
 /** The watch list answer: how many saved items have something new, then the one most important recall named by its item. */
 export function speakWatch(input: WatchSpeech): string {
-  const { totalItems, newItems, failedItems, recall, newRecallCount, label, firstCheck = false, emptyLabels = [] } = input;
+  const { totalItems, newItems, failedItems, recall, newRecallCount, label, firstCheck = false, emptyLabels = [], emptyVehicles = [] } = input;
   // The lead counts only the items that were really checked, so a failed or skipped item is never counted as clear.
   const checked = input.checkedItems ?? totalItems;
   if (totalItems === 0) return spoken("Your watch list is empty. Say add to my watch list and the item you want checked.");
@@ -226,13 +256,13 @@ export function speakWatch(input: WatchSpeech): string {
     const none = failedItems > 0 ? "None of the other items has a new recall since you last asked."
       : firstCheck ? "On this first check, none of your items has a recall."
         : "None of your items has a new recall since you last asked.";
-    const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
+    const empty = failedItems === 0 ? emptySentence(emptyLabels, emptyVehicles) : "";
     return spoken([unavailable, none, empty].filter(Boolean).join(" "));
   }
   const lead = checked <= 1
     ? (firstCheck ? "On this first check, your item has a new recall." : "Your item has a new recall since you last asked.")
     : `${firstCheck ? "On this first check, " : ""}${newItems} of your ${checked} items ${newItems === 1 ? "has" : "have"} a new recall${firstCheck ? "." : " since you last asked."}`;
-  const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
+  const empty = failedItems === 0 ? emptySentence(emptyLabels, emptyVehicles) : "";
   const tail = [unavailable, empty, others(newRecallCount, Math.min(newRecallCount, 5))].filter(Boolean).join(" ");
   return spoken(fit(lead, recall, tail, input.query ?? "", label ?? ""));
 }

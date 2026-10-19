@@ -2,10 +2,13 @@ import { FETCH_TIMEOUT_MS, Recall, SearchResult, SourceError } from "../types";
 import { byRecency } from "../rank.js";
 
 const NHTSA_ENDPOINT = "https://api.nhtsa.gov/recalls/recallsByVehicle";
+const NHTSA_MODELS_ENDPOINT = "https://api.nhtsa.gov/products/vehicle/models";
 const VPIC_ENDPOINT = "https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make";
 const NHTSA_PAGE = "https://www.nhtsa.gov/recalls?nhtsaId=";
 const MIN_YEAR = 1950;
 const MAX_RESULTS = 5;
+const MAX_SUBMODEL_CALLS = 6;
+const MAX_MODEL_OPTIONS = 5;
 const MAX_TITLE = 120;
 const MAX_HAZARD = 300;
 const MAX_REMEDY = 300;
@@ -16,6 +19,27 @@ const UNKNOWN_VEHICLE = "nhtsa: does not list that make and model for that year"
 const VEHICLE_SERVICE = "nhtsa: vehicle service is unavailable";
 
 export const UNKNOWN_VEHICLE_MESSAGE = UNKNOWN_VEHICLE;
+
+/** The prefix fits several vPIC models, so the answer is a question naming the real choices. */
+export class AmbiguousVehicleError extends SourceError {
+  readonly options: string[];
+  constructor(options: string[]) {
+    super(modelQuestion(options));
+    this.name = "AmbiguousVehicleError";
+    this.options = options;
+  }
+}
+
+export function isAmbiguousVehicleError(error: unknown): error is AmbiguousVehicleError {
+  return error instanceof AmbiguousVehicleError;
+}
+
+function modelQuestion(options: string[]): string {
+  const choices = options.length <= 1
+    ? (options[0] ?? "")
+    : `${options.slice(0, -1).join(", ")} or ${options[options.length - 1]}`;
+  return choices ? `Which one, ${choices}?` : "Which model do you mean?";
+}
 
 export function isUnknownVehicleError(error: unknown): boolean {
   return error instanceof SourceError && error.message.startsWith(UNKNOWN_VEHICLE);
@@ -52,6 +76,32 @@ interface VpicResponse {
   Errors?: unknown;
 }
 
+interface NhtsaModelEntry {
+  model?: unknown;
+  Model_Name?: unknown;
+}
+
+interface NhtsaModelsResponse {
+  results?: unknown;
+  Results?: unknown;
+}
+
+/** What the answer should say about a family name and the related models searched under it. */
+export interface VehicleSearchNote {
+  model: string;
+  relatedModels: string[];
+  searchedModels: string[];
+  example?: string;
+}
+
+// A note belongs to one result object and is read by the speech layer. A WeakMap keeps it out of the
+// structured tool output, whose schema the orchestrator owns.
+const vehicleNotes = new WeakMap<SearchResult, VehicleSearchNote>();
+
+export function vehicleSearchNote(result: SearchResult): VehicleSearchNote | undefined {
+  return vehicleNotes.get(result);
+}
+
 /** "F-150", "F150" and "F 150" all become "f150", so a spoken model matches the vPIC spelling. */
 function modelKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -77,26 +127,41 @@ function vpicCacheFor(fetchFn: FetchFn): Map<string, VpicCacheEntry> {
   return cache;
 }
 
+interface ModelLookup {
+  match: string | null;
+  options: string[];
+}
+
 /**
  * A vPIC name matches the wanted model when its key is the wanted key, the make key followed by the
  * wanted key ("Mazda3" for make mazda and model 3), or when one key is a prefix of the other so a
  * name that adds or drops a trim ("Camry Hybrid", "Corolla Cross") still matches.
+ * A prefix that fits several vPIC models returns those models as choices instead of guessing one.
  */
-/** The vPIC model name that matches the spoken model, or null. Exact keys win over prefix matches. */
-function modelMatch(names: string[], make: string, model: string): string | null {
+function modelLookup(names: string[], make: string, model: string): ModelLookup {
   const wanted = modelKey(model);
-  if (!wanted) return null;
+  if (!wanted) return { match: null, options: [] };
   const makeKey = modelKey(make);
   const exact = names.find((name) => modelKey(name) === wanted);
-  if (exact) return exact;
+  if (exact) return { match: exact, options: [] };
   const prefixed = names.find((name) => makeKey && modelKey(name) === `${makeKey}${wanted}`);
-  if (prefixed) return prefixed;
+  if (prefixed) return { match: prefixed, options: [] };
   // A prefix match counts only when exactly one vPIC model fits, so "Model" never stands for "Model S".
-  const prefix = names.filter((name) => {
+  const prefix: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
     const key = modelKey(name);
-    return key.length >= 3 && wanted.length >= 3 && (key.startsWith(wanted) || wanted.startsWith(key));
-  });
-  return prefix.length === 1 ? prefix[0]! : null;
+    if (key.length < 3 || wanted.length < 3) continue;
+    if (!key.startsWith(wanted) && !wanted.startsWith(key)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    prefix.push(name);
+  }
+  if (prefix.length === 1) return { match: prefix[0]!, options: [] };
+  if (prefix.length > 1) {
+    return { match: null, options: prefix.sort((a, b) => a.localeCompare(b)).slice(0, MAX_MODEL_OPTIONS) };
+  }
+  return { match: null, options: [] };
 }
 
 function maxAllowedYear(): number {
@@ -156,7 +221,12 @@ function titleCase(value: string): string {
   return value
     .split(/\s+/)
     .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .map((word) =>
+      word
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join("-")
+    )
     .join(" ");
 }
 
@@ -280,9 +350,154 @@ async function confirmModel(
   fetchFn: FetchFn
 ): Promise<string> {
   const names = await requestVpicModels(make, year, fetchFn);
-  const match = modelMatch(names, make, model);
-  if (match) return match;
+  const lookup = modelLookup(names, make, model);
+  if (lookup.match) return lookup.match;
+  if (lookup.options.length > 1) throw new AmbiguousVehicleError(lookup.options);
   throw new SourceError(`${UNKNOWN_VEHICLE}: ${make} ${model} ${year}`);
+}
+
+/** The model name to put in the answer: a make-prefixed vPIC name keeps the spoken model ("Mazda 3"). */
+function displayModel(make: string, spoken: string, match: string): string {
+  const makeKey = modelKey(make);
+  return makeKey && modelKey(match) === `${makeKey}${modelKey(spoken)}` ? spoken : match;
+}
+
+function vehicleQuery(make: string, model: string, year: number): string {
+  return `${year} ${titleCase(make)} ${model}`;
+}
+
+function withQuery(result: SearchResult, query: string): SearchResult {
+  if (result.query === query) return result;
+  const copy = { ...result, query };
+  const note = vehicleNotes.get(result);
+  if (note) vehicleNotes.set(copy, note);
+  return copy;
+}
+
+/**
+ * The related models NHTSA lists for this make and year. This is an optional enrichment, so a failure
+ * here leaves the family answer intact instead of turning it into an unreachable source.
+ */
+async function requestRelatedModels(make: string, year: number, fetchFn: FetchFn): Promise<string[]> {
+  const url =
+    `${NHTSA_MODELS_ENDPOINT}?` +
+    new URLSearchParams({ modelYear: String(year), make, issueType: "r" }).toString();
+  try {
+    const data = await requestJson<NhtsaModelsResponse>(url, fetchFn);
+    const raw = Array.isArray(data.results) ? data.results : Array.isArray(data.Results) ? data.Results : [];
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const record = entry as NhtsaModelEntry;
+      const name = typeof record.model === "string" ? record.model : record.Model_Name;
+      if (typeof name !== "string") continue;
+      const trimmed = name.trim();
+      const key = modelKey(trimmed);
+      if (!trimmed || seen.has(key)) continue;
+      seen.add(key);
+      names.push(trimmed);
+    }
+    return names;
+  } catch {
+    return [];
+  }
+}
+
+interface RecallFetch {
+  raw: unknown[];
+  total: number;
+}
+
+/** One NHTSA recall request. A 400 is the API's way of saying this model has no recalls listed. */
+async function fetchRecalls(make: string, model: string, year: number, fetchFn: FetchFn): Promise<RecallFetch> {
+  const url =
+    `${NHTSA_ENDPOINT}?` +
+    new URLSearchParams({ make, model, modelYear: String(year) }).toString();
+  let data: NhtsaResponse | null = null;
+  try {
+    data = await requestJson<NhtsaResponse>(url, fetchFn);
+  } catch (error) {
+    if (!(error instanceof SourceError) || !/HTTP 400/.test(error.message)) throw error;
+  }
+  const raw: unknown[] = data && Array.isArray(data.results) ? (data.results as unknown[]) : [];
+  const total =
+    data && typeof data.Count === "number" && data.Count >= 0
+      ? data.Count
+      : raw.length;
+  return { raw, total };
+}
+
+function toRecalls(raw: unknown[], make: string, model: string, year: number): Recall[] {
+  return raw
+    .filter(isNhtsaRecord)
+    .filter(isValidRecord)
+    .map((record) => toRecall(record, make, model, year));
+}
+
+/**
+ * A listed model belongs to the family when its key continues the family key (RX covers RX 350). A
+ * "-Class" family also covers its numbered variants (C-Class covers C300, C43 and AMG C43), while
+ * CLA and CLS stay separate models.
+ */
+function relatedModel(name: string, familyKey: string): boolean {
+  const key = modelKey(name);
+  if (key.startsWith(familyKey)) return true;
+  const letter = /^([a-z])class$/.exec(familyKey)?.[1];
+  if (!letter) return false;
+  const compact = key.startsWith("amg") ? key.slice(3) : key;
+  return compact.startsWith(letter) && /^\d/.test(compact.slice(1));
+}
+
+/**
+ * Search the models listed under a family name (RX gives RX 350, RX 350L and so on). The number of
+ * outbound sub-model calls is capped, and recalls are merged by campaign number.
+ */
+async function searchRelatedModels(
+  make: string,
+  family: string,
+  year: number,
+  fetchFn: FetchFn
+): Promise<{ related: string[]; searched: string[]; recalls: Recall[] }> {
+  const key = modelKey(family);
+  // The products list names the versions NHTSA files recalls under. vPIC adds any family name it
+  // lists separately, so the hint reflects every related model either list knows.
+  const [listed, vpic] = await Promise.all([
+    requestRelatedModels(make, year, fetchFn),
+    requestVpicModels(make, year, fetchFn).catch(() => [] as string[]),
+  ]);
+  const names: string[] = [];
+  const seenNames = new Set<string>();
+  for (const name of [...listed, ...vpic]) {
+    const nameKey = modelKey(name);
+    if (!nameKey || seenNames.has(nameKey)) continue;
+    seenNames.add(nameKey);
+    names.push(name);
+  }
+  const related = names.filter((name) => relatedModel(name, key));
+  const searched = related.filter((name) => modelKey(name) !== key).slice(0, MAX_SUBMODEL_CALLS);
+  const settled = await Promise.allSettled(
+    searched.map(async (model) => toRecalls((await fetchRecalls(make, model, year, fetchFn)).raw, make, model, year))
+  );
+  const recalls: Recall[] = [];
+  const seen = new Set<string>();
+  let failures = 0;
+  for (const result of settled) {
+    if (result.status === "rejected") {
+      failures++;
+      continue;
+    }
+    for (const recall of result.value) {
+      if (seen.has(recall.id)) continue;
+      seen.add(recall.id);
+      recalls.push(recall);
+    }
+  }
+  // A failed sub-model check must not become a no-recalls answer for the whole family.
+  if (failures > 0 && recalls.length === 0) {
+    throw new SourceError(`${VEHICLE_SERVICE}: a related model check failed`);
+  }
+  return { related, searched, recalls: recalls.sort(byRecency) };
 }
 
 export async function searchVehicle(
@@ -294,53 +509,52 @@ export async function searchVehicle(
 ): Promise<SearchResult> {
   validateYear(year);
 
-  const url =
-    `${NHTSA_ENDPOINT}?` +
-    new URLSearchParams({ make, model, modelYear: String(year) }).toString();
-
   const doFetch = fetchFn ?? fetch;
-  let data: NhtsaResponse | null = null;
-  try {
-    data = await requestJson<NhtsaResponse>(url, doFetch);
-  } catch (error) {
-    // A 400 is not "unknown" on its own: the recalls API answers 400 for a real model with no recalls.
-    if (!(error instanceof SourceError) || !/HTTP 400/.test(error.message)) throw error;
-  }
+  const first = await fetchRecalls(make, model, year, doFetch);
 
-  const raw: unknown[] = data && Array.isArray(data.results) ? (data.results as unknown[]) : [];
-
-  if (raw.length === 0) {
-    const match = await confirmModel(make, model, year, doFetch);
-    // NHTSA files recalls under the vPIC model name, so "3" for Mazda must be searched again as "Mazda3"
-    // before the answer can say that nothing is listed.
-    if (canonicalRetry && modelKey(match) !== modelKey(model)) {
-      const again = await searchVehicle(make, match, year, doFetch, false);
-      if (again.total > 0) return { ...again, query: `${year} ${titleCase(make)} ${titleCase(model)}` };
-    }
+  if (first.raw.length > 0) {
     return {
       query: `${year} ${titleCase(make)} ${titleCase(model)}`,
       source: "nhtsa",
-      total: 0,
-      recalls: [],
+      total: first.total,
+      recalls: toRecalls(first.raw, make, model, year).sort(byRecency).slice(0, MAX_RESULTS),
     };
   }
 
-  const total =
-    data && typeof data.Count === "number" && data.Count >= 0
-      ? data.Count
-      : raw.length;
+  const match = await confirmModel(make, model, year, doFetch);
+  const canonical = displayModel(make, model, match);
+  const query = vehicleQuery(make, canonical, year);
 
-  const recalls = raw
-    .filter(isNhtsaRecord)
-    .filter(isValidRecord)
-    .map((record) => toRecall(record, make, model, year))
-    .sort(byRecency)
-    .slice(0, MAX_RESULTS);
+  if (canonicalRetry && modelKey(match) !== modelKey(model)) {
+    // NHTSA files recalls under the vPIC model name, so "3" for Mazda is searched again as "Mazda3"
+    // and "Accordion" is searched as "Accord" before the answer can say that nothing is listed.
+    const again = await searchVehicle(make, match, year, doFetch, false);
+    const result = withQuery(again, query);
+    const found = vehicleNotes.get(result);
+    vehicleNotes.set(result, {
+      model: canonical,
+      relatedModels: found?.relatedModels ?? [],
+      searchedModels: found?.searchedModels ?? [],
+      example: found?.example,
+    });
+    return result;
+  }
 
-  return {
-    query: `${year} ${titleCase(make)} ${titleCase(model)}`,
-    source: "nhtsa",
-    total,
-    recalls,
+  const related = await searchRelatedModels(make, match, year, doFetch);
+  const note: VehicleSearchNote = {
+    model: canonical,
+    relatedModels: related.related,
+    searchedModels: related.searched,
+    example: related.related.find((name) => modelKey(name) !== modelKey(match)) ?? related.related[0],
   };
+  const result: SearchResult = related.recalls.length > 0
+    ? {
+        query,
+        source: "nhtsa",
+        total: related.recalls.length,
+        recalls: related.recalls.slice(0, MAX_RESULTS),
+      }
+    : { query, source: "nhtsa", total: 0, recalls: [] };
+  vehicleNotes.set(result, note);
+  return result;
 }

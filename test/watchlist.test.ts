@@ -698,12 +698,71 @@ test("check says no recalls found when sources answer zero and could not check o
   const env = watchEnv();
   await addWatchItem(env, "user", { year: 2019, make: "Chevy", model: "Silverado" }, async () => "known");
   const empty = await checkWatchList(env, "user", async () => ({ recalls: [], failed: false }));
-  assert.match(empty.text, /No recalls found for 2019 Chevrolet Silverado 1500\./);
+  assert.match(empty.text, /NHTSA lists no recalls filed under the name 2019 Chevrolet Silverado 1500\. That does not prove the car is safe\./);
+  assert.ok(!empty.text.includes("No recalls found"), empty.text);
   assert.ok(!empty.text.includes("could not check"), empty.text);
 
   const unavailable = await checkWatchList(env, "user", async () => ({ recalls: [], failed: true }));
   assert.match(unavailable.text, /could not check/);
   assert.ok(!unavailable.text.includes("No recalls found"), unavailable.text);
+});
+
+test("the vehicle tool answers an ambiguous prefix with a question naming the vPIC choices", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Model S" }, { Model_Name: "Model X" }, { Model_Name: "Model 3" }, { Model_Name: "Model Y" }] }), { status: 200 });
+    }
+    return new Response("{}", { status: 400 });
+  }) as typeof fetch;
+  try {
+    const result = await toolHandler(createServer({ env: watchEnv() }), "check_vehicle_recalls")({ year: 2021, make: "tesla", model: "model" }, {});
+    assert.equal(result.isError, undefined);
+    assert.equal(result.content?.[0]?.text, "Which one, Model 3, Model S, Model X or Model Y?");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a misheard vehicle saved from a single vPIC prefix uses the real model name", async () => {
+  const env = watchEnv();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Accord" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const added = await addWatchItem(env, "user", { year: 2019, make: "honda", model: "accordion" });
+    assert.ok(added.ok);
+    assert.equal(added.item.label, "2019 Honda Accord");
+    assert.equal(added.item.model, "accord");
+    assert.equal((await readWatchList(env, "user"))[0]?.label, "2019 Honda Accord");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("check_all_recalls turns a vehicle kind with no make or model into a year make and model prompt", async () => {
+  const original = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = (async () => {
+    called = true;
+    throw new TypeError("no source should be searched");
+  }) as typeof fetch;
+  try {
+    const result = await toolHandler(createServer({ env: watchEnv() }), "check_all_recalls")({ query: "is my car recalled" }, {});
+    const text = result.content?.[0]?.text ?? "";
+    assert.match(text, /Which vehicle\?/);
+    assert.match(text, /year, make and model/);
+    assert.equal(result.isError, undefined);
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 test("the watch lead ranks a hazard that mentions death above a newer high severity recall", async () => {

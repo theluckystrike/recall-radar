@@ -35,7 +35,7 @@ function wordCount(s: string): number {
 test("speak: zero recalls uses NHTSA name and never claims safety", () => {
   assert.equal(
     speak({ query: "honda accord", source: "nhtsa", total: 0, recalls: [] }),
-    "NHTSA lists no recalls filed under the name honda accord. Recalls are often filed under a specific model, such as C300 for a C-Class, so check the exact model on the registration too. That does not prove the car is safe.",
+    "NHTSA lists no recalls filed under the name honda accord. That does not prove the car is safe.",
   );
 });
 
@@ -404,6 +404,13 @@ test("speakWatch counts only the items that were checked in its lead", () => {
   const lead = out.slice(0, out.indexOf("I could not"));
   assert.ok(!lead.includes("2 of your 4 items"), out);
   assert.match(out, /I could not fully check 2 of your 4 items/);
+});
+
+test("speakWatch: a watched vehicle with no recalls uses the honest direct answer wording", () => {
+  const out = speakWatch({ totalItems: 1, newItems: 0, failedItems: 0, newRecallCount: 0, firstCheck: true, emptyVehicles: ["2019 Chevrolet Silverado 1500"] });
+  assert.match(out, /^On this first check, none of your items has a recall\./);
+  assert.match(out, /NHTSA lists no recalls filed under the name 2019 Chevrolet Silverado 1500\. That does not prove the car is safe\./);
+  assert.ok(!out.includes("No recalls found"), out);
 });
 
 test("speakWatch on a first check with zero results says no recalls found", () => {

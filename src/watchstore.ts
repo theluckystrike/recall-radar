@@ -229,6 +229,7 @@ export class WatchStore {
     const currentById = new Map(current.map((item) => [item.id, item]));
     const fresh: Array<{ item: WatchItem; recall: Recall }> = [];
     const emptyLabels: string[] = [];
+    const emptyVehicles: string[] = [];
     let failedItems = 0;
     let checkedItems = 0;
     for (const { item, recalls, failed } of checked) {
@@ -237,7 +238,10 @@ export class WatchStore {
       // A partial failure that still produced a recall was reached, so it counts as checked for the lead.
       if (failed) failedItems++;
       if (!failed || recalls.length > 0) checkedItems++;
-      if (!failed && recalls.length === 0) emptyLabels.push(item.label);
+      if (!failed && recalls.length === 0) {
+        if (item.kind === "vehicle") emptyVehicles.push(item.label);
+        else emptyLabels.push(item.label);
+      }
       for (const recall of recalls) {
         if (!item.seen.includes(recall.id) && !now.seen.includes(recall.id)) fresh.push({ item, recall });
       }
@@ -252,7 +256,7 @@ export class WatchStore {
     fresh.sort((a, b) => byImportance(a.recall, b.recall));
     const recalls = fresh.map((entry) => entry.recall);
     const newItems = new Set(fresh.map((entry) => entry.item.id)).size;
-    const text = speakWatch({ totalItems: merged.length, newItems, failedItems, checkedItems, recall: recalls[0], newRecallCount: recalls.length, query: fresh[0]?.item.query, label: fresh[0]?.item.label, firstCheck, emptyLabels });
+    const text = speakWatch({ totalItems: merged.length, newItems, failedItems, checkedItems, recall: recalls[0], newRecallCount: recalls.length, query: fresh[0]?.item.query, label: fresh[0]?.item.label, firstCheck, emptyLabels, emptyVehicles });
     return { totalItems: merged.length, newItems, failedItems, recalls, followUps: followUps(recalls), text, items: merged };
   }
 }

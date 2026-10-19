@@ -4,10 +4,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
+  isAmbiguousVehicleError,
   isUnknownVehicleError,
   isVehicleServiceError,
   searchVehicle,
 } from "../src/sources/nhtsa";
+import { speak } from "../src/speech";
 import { SourceError } from "../src/types";
 
 const loadFixture = (name: string): unknown =>
@@ -474,4 +476,95 @@ test("the vPIC model list is cached by make and year for six hours", async () =>
   assert.equal(first.total, 0);
   assert.equal(second.total, 0);
   assert.equal(vpicCalls, 1, "the second check uses the cached model list");
+});
+
+const recallRecord = (campaign: string, component = "BRAKES") => ({
+  NHTSACampaignNumber: campaign,
+  ReportReceivedDate: "01/02/2021",
+  Component: component,
+  Consequence: "The part may fail.",
+  Remedy: "Dealers will replace it.",
+});
+
+test("a family name searches the listed sub-models and merges recalls by campaign number", async () => {
+  const urls: string[] = [];
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "C-Class" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [{ model: "C300" }, { model: "C43" }, { model: "C300" }] }), { status: 200 });
+    }
+    if (/model=C300(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [recallRecord("A")] }), { status: 200 });
+    }
+    if (/model=C43(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 2, results: [recallRecord("B"), recallRecord("A")] }), { status: 200 });
+    }
+    return new Response("{}", { status: 400 });
+  };
+  const result = await searchVehicle("mercedes-benz", "c-class", 2021, fetchFn);
+  assert.equal(result.total, 2, "the duplicate campaign is counted once");
+  assert.deepEqual(result.recalls.map((r) => r.id).sort(), ["A", "B"]);
+  assert.equal(result.query, "2021 Mercedes-Benz C-Class");
+  const subModelCalls = urls.filter((url) => url.includes("recallsByVehicle") && /model=(C300|C43)/.test(url));
+  assert.equal(subModelCalls.length, 2, "each listed sub-model is searched once");
+  const out = speak(result);
+  assert.match(out, /C300 and C43/, out);
+});
+
+test("a family name with no sub-model recalls says what was searched and never claims safety", async () => {
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "C-Class" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [{ model: "C300" }, { model: "C43" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+  const result = await searchVehicle("mercedes-benz", "c-class", 2021, fetchFn);
+  assert.equal(result.total, 0);
+  const out = speak(result);
+  assert.match(out, /after checking C300 and C43/, out);
+  assert.match(out, /That does not prove the car is safe/, out);
+  assert.match(out, /such as C300 for a C-Class/, out);
+});
+
+test("an ambiguous prefix asks which real vPIC model instead of refusing", async () => {
+  const fetchFn = routedFetch([
+    ["vpic.nhtsa.dot.gov", vpic({ Results: [{ Model_Name: "Model S" }, { Model_Name: "Model X" }, { Model_Name: "Model 3" }, { Model_Name: "Model Y" }] })],
+    ["api.nhtsa.gov", nhtsa(400)],
+  ]);
+  await assert.rejects(
+    () => searchVehicle("tesla", "model", 2021, fetchFn),
+    (error: unknown) => {
+      assert.ok(isAmbiguousVehicleError(error));
+      assert.equal(error.message, "Which one, Model 3, Model S, Model X or Model Y?");
+      return true;
+    }
+  );
+});
+
+test("a single prefix match speaks and returns the vPIC name, never the misheard name", async () => {
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Accord" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    if (/model=Accord(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [recallRecord("A")] }), { status: 200 });
+    }
+    return new Response("{}", { status: 400 });
+  };
+  const result = await searchVehicle("honda", "accordion", 2019, fetchFn);
+  assert.equal(result.query, "2019 Honda Accord");
+  assert.ok(!result.query.includes("Accordion"), result.query);
+  assert.match(speak(result), /for the 2019 Honda Accord\./, speak(result));
 });

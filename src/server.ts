@@ -4,16 +4,18 @@ import * as z from "zod/v4";
 import { searchProducts } from "./sources/cpsc.js";
 import { searchDrug, searchFood } from "./sources/fda.js";
 import {
+  isAmbiguousVehicleError,
   isUnknownVehicleError,
   isVehicleServiceError,
   searchVehicle,
   UNKNOWN_VEHICLE_MESSAGE,
+  vehicleSearchNote,
 } from "./sources/nhtsa.js";
 import { byRecency } from "./rank.js";
 import { followUps, speak, speakMany } from "./speech.js";
 import { CARD_MIME, CARD_NAME, CARD_URI, cardDocument } from "./card.js";
 import { cleanDrugItem, cleanItem, singularPhrase } from "./query.js";
-import { normalizeMake, normalizeModel } from "./router.js";
+import { normalizeMake, normalizeModel, route } from "./router.js";
 import {
   MemoryStorage,
   WatchStore,
@@ -72,6 +74,13 @@ function sorry(err: unknown) {
   let text = "Sorry, something went wrong while checking recalls. Please try again.";
   if (err instanceof RangeError) text = `Sorry, ${message}`;
   else if (err instanceof SourceError && /could not be fully checked/.test(message)) text = message;
+  else if (isAmbiguousVehicleError(err)) {
+    // The prefix fits several real vPIC models: ask which one instead of refusing the car.
+    return {
+      content: [{ type: "text" as const, text: message }],
+      structuredContent: { query: "", source: "nhtsa", total: 0, recalls: [] },
+    };
+  }
   else if (isUnknownVehicleError(err)) text = "I could not find that make and model in the NHTSA database. Please say the make and model the way they appear on the car, for example Ford F-150.";
   else if (isVehicleServiceError(err)) text = "The NHTSA vehicle service is unavailable right now, so I could not check that car. Please try again in a minute.";
   else if (err instanceof SourceError && /timeout|abort/i.test(message)) text = "The government recall service did not answer in time. Please try again in a minute.";
@@ -134,6 +143,18 @@ export function watchUserId(userId?: string | null): string {
 }
 
 export const NEED_USER_ID = "I need a user id to keep a watch list.";
+
+/** "Is my car recalled" names a vehicle but no make or model. Ask for all three instead of searching products. */
+const VEHICLE_PROMPT = "Which vehicle? Tell me the year, make and model, for example 2018 Honda Accord.";
+
+function isVehicleOnlyQuestion(text: string): boolean {
+  try {
+    const routed = route(text);
+    return routed?.tool === "ask_vehicle" && routed.args.missing === "vehicle";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The exact search each single tool runs. The tools and the watch check both call these, so a saved item is
@@ -234,22 +255,36 @@ export async function readWatchList(env: WatchEnv | undefined, userId?: string |
   return watchTarget(env, userId).list();
 }
 
-export type WatchVehicleVerification = "known" | "unknown" | "unverified";
-export type WatchVehicleVerifier = (make: string, model: string, year: number) => Promise<WatchVehicleVerification>;
+export type WatchVehicleVerification = "known" | "unknown" | "unverified" | "ambiguous";
+
+export interface WatchVehicleCheck {
+  status: WatchVehicleVerification;
+  /** The vPIC spelling, so a misheard model is saved under the name NHTSA really lists. */
+  model?: string;
+  message?: string;
+}
+
+export type WatchVehicleVerifier = (make: string, model: string, year: number) => Promise<WatchVehicleVerification | WatchVehicleCheck>;
 
 /**
  * One NHTSA check when a vehicle is added, with the same model-word retry the check tool uses, so a trim
  * such as "accord ex" is not refused at add time. A resolved search means the model is known, even when it
  * has no recalls. Only a model vPIC does not list is unknown. A vPIC failure is unverified, never unknown.
+ * An ambiguous prefix returns the question naming the real vPIC models, and is never saved as a guess.
  */
-export async function verifyWatchVehicle(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<WatchVehicleVerification> {
+export async function resolveWatchVehicle(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<WatchVehicleCheck> {
   try {
-    await searchVehicleWithRetry(make, model, year, fetchFn);
-    return "known";
+    const result = await searchVehicleWithRetry(make, model, year, fetchFn);
+    return { status: "known", model: vehicleSearchNote(result)?.model };
   } catch (err) {
-    if (isUnknownVehicleError(err)) return "unknown";
-    return "unverified";
+    if (isAmbiguousVehicleError(err)) return { status: "ambiguous", message: err.message };
+    if (isUnknownVehicleError(err)) return { status: "unknown" };
+    return { status: "unverified" };
   }
+}
+
+export async function verifyWatchVehicle(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<WatchVehicleVerification> {
+  return (await resolveWatchVehicle(make, model, year, fetchFn)).status;
 }
 
 const UNKNOWN_VEHICLE = "NHTSA does not list that make and model for that year. Check the spelling on the car and try again.";
@@ -259,7 +294,7 @@ export async function addWatchItem(
   env: WatchEnv | undefined,
   userId: string | null | undefined,
   input: WatchInput,
-  verify: WatchVehicleVerifier = verifyWatchVehicle,
+  verify: WatchVehicleVerifier = resolveWatchVehicle,
 ): Promise<AddWatchOutcome> {
   if (!env) return { ok: false, message: "The watch list is not available right now." };
   if (!watchUserId(userId)) return { ok: false, message: NEED_USER_ID };
@@ -270,12 +305,21 @@ export async function addWatchItem(
     return { ok: false, message: err instanceof Error ? err.message : "I could not add that item." };
   }
   let note: string | undefined;
+  let saveInput = input;
   if (draft.kind === "vehicle") {
-    const status = await verify(draft.make ?? "", draft.model ?? "", draft.year ?? 0);
+    const verified = await verify(draft.make ?? "", draft.model ?? "", draft.year ?? 0);
+    const status = typeof verified === "string" ? verified : verified.status;
     if (status === "unknown") return { ok: false, message: UNKNOWN_VEHICLE };
+    if (status === "ambiguous") {
+      return { ok: false, message: (typeof verified === "string" ? "" : verified.message) || "Which model do you mean?" };
+    }
     if (status === "unverified") note = UNVERIFIED_VEHICLE;
+    const canonical = typeof verified === "string" ? undefined : verified.model;
+    if (canonical && canonical !== draft.model) {
+      saveInput = { year: draft.year, make: draft.make, model: canonical };
+    }
   }
-  const result = await watchTarget(env, userId).add(input);
+  const result = await watchTarget(env, userId).add(saveInput);
   return result.ok && note ? { ...result, note } : result;
 }
 
@@ -419,6 +463,13 @@ function registerAll(server: McpServer) {
   }, async ({ query: q }) => {
     // A query with no Latin letters is a bad input, not three unreachable sources.
     try { cleanItem(q); } catch (err) { return sorry(err); }
+    // "Is my car recalled" belongs to the vehicle tool even when a client sends it here: ask for year, make and model.
+    if (isVehicleOnlyQuestion(q)) {
+      return {
+        content: [{ type: "text" as const, text: VEHICLE_PROMPT }],
+        structuredContent: { results: [], failed: [], followUps: [] },
+      };
+    }
     const sources = ["cpsc", "fda-food", "fda-drug"] as const;
     const settled = await Promise.allSettled([SEARCH_SOURCES.product(q), SEARCH_SOURCES.food(q), SEARCH_SOURCES.drug(q)]);
     const results = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
