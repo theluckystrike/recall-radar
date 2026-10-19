@@ -67,6 +67,12 @@ test("marks a CPSC recall high when the hazard or title mentions death, died or 
   assert.equal(result.recalls.find((r) => r.id === "5")?.severity, "high");
 });
 
+test("strips a leading list number from a CPSC title", async () => {
+  const body = [{ RecallNumber: "1", RecallDate: "2024-01-01T00:00:00", Title: "1. Graco Crib", Hazards: [{ Name: "Fall risk." }] }];
+  const result = await searchProducts("graco crib", fetchReturning(200, body));
+  assert.equal(result.recalls[0]!.title, "Graco Crib");
+});
+
 test("returns zero results for an empty array", async () => {
   const result = await searchProducts("nothing", fetchReturning(200, []));
   assert.equal(result.total, 0);

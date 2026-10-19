@@ -1,3 +1,4 @@
+import { stripListNumber } from "../text";
 import { Recall, SearchResult, SourceError, Source, FETCH_TIMEOUT_MS } from "../types";
 
 type FetchFn = typeof fetch;
@@ -81,7 +82,7 @@ function toRecall(raw: unknown, source: Source): Recall | null {
     source,
     id,
     date,
-    title: cap(str(raw.product_description), MAX_TITLE),
+    title: cap(stripListNumber(str(raw.product_description)), MAX_TITLE),
     hazard: cap(str(raw.reason_for_recall), MAX_TEXT),
     remedy: "",
     url: FDA_URL,

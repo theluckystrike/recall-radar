@@ -1,3 +1,4 @@
+import { stripListNumber } from "../text";
 import { Recall, SearchResult, SourceError, FETCH_TIMEOUT_MS } from "../types";
 
 type FetchFn = typeof fetch;
@@ -54,7 +55,7 @@ function toRecall(raw: unknown): Recall | null {
   const id = str(raw.RecallNumber);
   const date = isoDate(raw.RecallDate);
   if (!id || !date) return null;
-  const title = cap(str(raw.Title), MAX_TITLE) || cap(firstName(raw.Products), MAX_TITLE);
+  const title = cap(stripListNumber(str(raw.Title)), MAX_TITLE) || cap(stripListNumber(firstName(raw.Products)), MAX_TITLE);
   const hazard = cap(firstName(raw.Hazards), MAX_TEXT);
   const recall: Recall = {
     source: "cpsc",

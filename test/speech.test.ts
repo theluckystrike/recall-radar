@@ -337,6 +337,32 @@ test("speak: leading list markers are stripped from FDA and CPSC titles and desc
   assert.ok(!cpscOut.includes("- Contact"), cpscOut);
 });
 
+test("spokenTitle strips a leading list number from a title", () => {
+  assert.equal(spokenTitle(recall({ source: "fda-food", title: "1. ByHeart Whole Nutrition Infant Formula" })), "ByHeart Whole Nutrition Infant Formula");
+  assert.equal(spokenTitle(recall({ source: "cpsc", title: "2. Graco Crib" })), "Graco Crib");
+});
+
+// ---- search notes are for screens, not the ear ----
+
+test("speak: the all words matched note is not read aloud", () => {
+  const r = recall({ source: "fda-drug", date: "2026-01-05", title: "Metformin Extended Release Tablets", hazard: "The tablets may contain a harmful impurity.", remedy: "Contact your pharmacy." });
+  const out = speak({ query: "metformin extended release (all words matched)", source: "fda-drug", total: 66, recalls: [r] });
+  assert.ok(!out.includes("all words matched"), out);
+  assert.ok(out.includes("I found 66 recalls that mention metformin extended release."), out);
+});
+
+test("speak: the all words matched note is not read aloud on a no recalls answer", () => {
+  const out = speak({ query: "metformin extended release (all words matched)", source: "fda-drug", total: 0, recalls: [] });
+  assert.ok(!out.includes("all words matched"), out);
+  assert.match(out, /no recalls for metformin extended release/);
+});
+
+test("speakMany: the all words matched note is not read aloud", () => {
+  const out = speakMany([{ query: "peanut butter (all words matched)", source: "fda-food", total: 0, recalls: [] }]);
+  assert.ok(!out.includes("all words matched"), out);
+  assert.match(out, /no recalls for peanut butter/);
+});
+
 test("speakWatch: reports the new count and says an unavailable source is not a no-recalls answer", () => {
   const r = recall({ date: "2023-01-15", title: "Widget", hazard: "May cause injury.", remedy: "Contact the manufacturer." });
   assert.equal(

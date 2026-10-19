@@ -57,6 +57,15 @@ test("maps a real FDA drug fixture, Class III becomes low", async () => {
   assert.equal(classIII!.severity, "low");
 });
 
+test("strips a leading list number from an FDA product description", async () => {
+  const body = {
+    meta: { results: { total: 1 } },
+    results: [{ recall_number: "H-0001-2026", product_description: "1. ByHeart Whole Nutrition Infant Formula", reason_for_recall: "Botulism", classification: "Class I", report_date: "20260105", status: "Ongoing", recalling_firm: "ByHeart" }],
+  };
+  const result = await searchFood("byheart formula", fetchReturning(200, body));
+  assert.equal(result.recalls[0]!.title, "ByHeart Whole Nutrition Infant Formula");
+});
+
 test("treats a 404 NOT_FOUND as zero results, not an error", async () => {
   const body = { error: { code: "NOT_FOUND", message: "No matches found!" } };
   const result = await searchFood("zzz", fetchReturning(404, body));

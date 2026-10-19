@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { CARD_MIME, CARD_URI, cardDocument, escapeHtml, renderRecallCard, sourceLabel } from "../src/card.js";
+import { spokenDate, stripListNumber } from "../src/text.js";
 import { createServer, itemSearch } from "../src/server.js";
 import { speak } from "../src/speech.js";
 import { searchFood } from "../src/sources/fda.js";
@@ -91,6 +92,35 @@ test("the card document is self contained and carries inline CSS only", () => {
   assert.match(html, /Checking the newest recall\./);
   const rendered = cardDocument(HOSTILE);
   assert.ok(rendered.includes("&lt;script&gt;"), "a server rendered card escapes its data");
+});
+
+test("the card shows a spoken date and strips a leading list number", () => {
+  const html = renderRecallCard({ ...HOSTILE, date: "2025-12-17", title: "1. ByHeart Whole Nutrition Infant Formula" });
+  assert.ok(html.includes("17 December 2025"), html);
+  assert.ok(!html.includes("2025-12-17"), html);
+  assert.ok(html.includes("ByHeart Whole Nutrition Infant Formula"), html);
+  assert.ok(!html.includes("1. ByHeart"), html);
+});
+
+test("spokenDate reads an ISO day and leaves anything else alone", () => {
+  assert.equal(spokenDate("2025-12-17"), "17 December 2025");
+  assert.equal(spokenDate("2026-01-05"), "5 January 2026");
+  assert.equal(spokenDate("not a date"), "not a date");
+  assert.equal(spokenDate(""), "");
+});
+
+test("stripListNumber removes a leading list number and leaves a plain title", () => {
+  assert.equal(stripListNumber("1. ByHeart Whole Nutrition"), "ByHeart Whole Nutrition");
+  assert.equal(stripListNumber("ByHeart Whole Nutrition"), "ByHeart Whole Nutrition");
+  assert.equal(stripListNumber(" 2. Graco Crib"), "Graco Crib");
+});
+
+test("the card script rebuilds the same spoken date and stripped title", () => {
+  const html = cardDocument();
+  assert.match(html, /function spokenDate\(/);
+  assert.match(html, /function stripListNumber\(/);
+  assert.match(html, /spokenDate\(recall\.date\)/);
+  assert.match(html, /stripListNumber\(recall\.title \|\| "Recall"\)/);
 });
 
 test("an http recall link is kept and escaped", () => {

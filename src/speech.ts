@@ -1,5 +1,6 @@
-import type { Recall, SearchResult, Source } from "./types";
 import { byRecency } from "./rank.js";
+import { stripListNumber } from "./text.js";
+import type { Recall, SearchResult, Source } from "./types";
 
 // Voice answers for Alexa+. One recall is read in full, then the count of the others.
 // Target: about 50 words, never more than 70. The structured result keeps every detail.
@@ -120,7 +121,7 @@ function garbled(title: string): boolean {
 }
 
 export function spokenTitle(recall: Recall, query = ""): string {
-  const title = scrub(recall.source, recall.title);
+  const title = stripListNumber(scrub(recall.source, recall.title));
   if (recall.source !== "nhtsa" && recall.source !== "cpsc" && garbled(title)) return query ? `a product listed under ${query}` : "a listed product";
   if (recall.source === "nhtsa") return vehicleTitle(title);
   if (recall.source === "cpsc") return productTitle(title);
@@ -142,8 +143,8 @@ function detail(recall: Recall, query = "", subject = ""): string {
   return [`${important}${newest}`, what, hazard, remedy, pharmacist].filter(Boolean).join(" ");
 }
 
-/** The search note "(matched by graco and play)" is for screens, not for the ear. */
-const spokenQuery = (q: string) => q.replace(/\s*\(matched by [^)]*\)\s*$/, "");
+/** Search notes ("(matched by graco and play)", "(all words matched)") are for screens, not for the ear. */
+const spokenQuery = (q: string) => q.replace(/\s*\((?:matched by [^)]*|all words matched)\)\s*$/, "");
 
 const mention = (n: number) => (n === 1 ? "that mentions" : "that mention");
 
@@ -190,7 +191,7 @@ export function speak(result: SearchResult): string {
     return spoken(`I found no recalls for ${spokenQuery(result.query)} in ${SOURCE_NAMES[result.source]}. That does not prove it is safe, only that nothing is listed.`);
   }
   const matched = /\(matched by /.test(result.query);
-  const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${result.query}.`
+  const lead = result.source === "nhtsa" ? `I found ${count(result.total, "recall")} for the ${spokenQuery(result.query)}.`
     : `I found ${count(result.total, "recall")} ${matched ? "matching" : mention(result.total)} ${spokenQuery(result.query)}.`;
   return spoken(fit(lead, first, others(result.total, result.recalls.length), spokenQuery(result.query)));
 }

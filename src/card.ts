@@ -1,4 +1,5 @@
 import { cpscDeathMention } from "./sources/cpsc.js";
+import { spokenDate, stripListNumber } from "./text.js";
 import type { Recall, Source } from "./types.js";
 
 // The visual recall card, served as an MCP Apps UI resource. The extension is
@@ -60,8 +61,8 @@ export function renderRecallCard(recall: Recall): string {
   return [
     `<article class="rr-card">`,
     `<header class="rr-head"><span class="rr-source">${escapeHtml(sourceLabel(recall.source))}</span><span class="rr-severity">${escapeHtml(severityLabel(effectiveSeverity(recall)))}</span></header>`,
-    `<h2 class="rr-title">${escapeHtml(recall.title)}</h2>`,
-    `<p class="rr-date">${escapeHtml(recall.date)}</p>`,
+    `<h2 class="rr-title">${escapeHtml(stripListNumber(recall.title))}</h2>`,
+    `<p class="rr-date">${escapeHtml(spokenDate(recall.date))}</p>`,
     `<p class="rr-field"><span class="rr-field-name">Hazard</span><span class="rr-field-value">${escapeHtml(recall.hazard)}</span></p>`,
     `<p class="rr-field"><span class="rr-field-name">Remedy</span><span class="rr-field-value">${escapeHtml(recall.remedy)}</span></p>`,
     linkRow,
@@ -115,6 +116,23 @@ export function cardDocument(initial?: Recall): string {
     return source === "nhtsa" ? "NHTSA" : source === "cpsc" ? "CPSC" : (source === "fda-food" || source === "fda-drug") ? "FDA" : "Recall source";
   }
   var DEATH_MENTION = /\\b(?:death|deaths|died|fatal(?:it(?:y|ies))?)\\b/i;
+  var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  function spokenDate(value) {
+    var text = String(value === undefined || value === null ? "" : value).trim();
+    var match = /^(\\d{4})-(\\d{2})-(\\d{2})/.exec(text);
+    if (!match) return text;
+    var month = MONTHS[Number(match[2]) - 1];
+    return month ? Number(match[3]) + " " + month + " " + match[1] : text;
+  }
+  function stripListNumber(value) {
+    var out = String(value === undefined || value === null ? "" : value);
+    for (var i = 0; i < 3; i++) {
+      var next = out.replace(/^\\s*\\d+\\.\\s+/, "");
+      if (next === out) break;
+      out = next;
+    }
+    return out;
+  }
   function severityName(recall) {
     var severity = recall ? recall.severity : undefined;
     if (!severity && recall && recall.source === "cpsc" && (DEATH_MENTION.test(String(recall.title || "")) || DEATH_MENTION.test(String(recall.hazard || "")))) severity = "high";
@@ -154,8 +172,8 @@ export function cardDocument(initial?: Recall): string {
     head.appendChild(text("span", "rr-source", sourceName(recall.source)));
     head.appendChild(text("span", "rr-severity", severityName(recall)));
     card.appendChild(head);
-    card.appendChild(text("h2", "rr-title", recall.title || "Recall"));
-    card.appendChild(text("p", "rr-date", recall.date));
+    card.appendChild(text("h2", "rr-title", stripListNumber(recall.title || "Recall")));
+    card.appendChild(text("p", "rr-date", spokenDate(recall.date)));
     if (recall.hazard) card.appendChild(field("Hazard", recall.hazard));
     if (recall.remedy) card.appendChild(field("Remedy", recall.remedy));
     var href = httpOnly(recall.url);
