@@ -473,6 +473,16 @@ async function confirmModel(
   throw new SourceError(`${UNKNOWN_VEHICLE}: ${make} ${model} ${year}`);
 }
 
+/**
+ * The vPIC spelling of a model for a make and year, or undefined when vPIC names no single match.
+ * The direct search only asks vPIC when NHTSA returns no recalls, so the watch add path calls this
+ * for a model that already has recalls and saves the agency spelling instead of the typed one.
+ */
+export async function vpicModelName(make: string, model: string, year: number, fetchFn?: FetchFn): Promise<string | undefined> {
+  const names = await requestVpicModels(make, year, fetchFn ?? fetch);
+  return modelLookup(names, make, model).match ?? undefined;
+}
+
 /** The model name to put in the answer: a make-prefixed vPIC name keeps the spoken model ("Mazda 3"). */
 function displayModel(make: string, spoken: string, match: string): string {
   const makeKey = modelKey(make);

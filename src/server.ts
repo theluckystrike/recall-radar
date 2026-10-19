@@ -10,6 +10,7 @@ import {
   searchVehicle,
   UNKNOWN_VEHICLE_MESSAGE,
   vehicleSearchNote,
+  vpicModelName,
 } from "./sources/nhtsa.js";
 import { byRecency } from "./rank.js";
 import { followUps, speak, speakMany } from "./speech.js";
@@ -275,7 +276,11 @@ export type WatchVehicleVerifier = (make: string, model: string, year: number) =
 export async function resolveWatchVehicle(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<WatchVehicleCheck> {
   try {
     const result = await searchVehicleWithRetry(make, model, year, fetchFn);
-    return { status: "known", model: vehicleSearchNote(result)?.model };
+    const note = vehicleSearchNote(result)?.model;
+    // A model that already has recalls never reaches vPIC in the search, so ask it here for the
+    // spelling. A vPIC miss or failure falls back to the typed name, never to unknown.
+    const canonical = note ?? await vpicModelName(make, model, year, fetchFn).catch(() => undefined);
+    return { status: "known", model: canonical };
   } catch (err) {
     if (isAmbiguousVehicleError(err)) return { status: "ambiguous", message: err.message };
     if (isUnknownVehicleError(err)) return { status: "unknown" };

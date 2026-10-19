@@ -796,6 +796,48 @@ test("a saved vehicle keeps the vPIC display casing on the watch list (2021 Lexu
   }
 });
 
+test("a saved vehicle keeps the vPIC casing when the model already has recalls (rx -> 2021 Lexus RX)", async () => {
+  const env = watchEnv();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify({ Results: [{ Model_Name: "RX" }] }), { status: 200 });
+    return new Response(JSON.stringify({ Count: 1, results: [{ NHTSACampaignNumber: "20V-1", ReportReceivedDate: "01/02/2021", Component: "AIR BAGS", Consequence: "The air bag may fail.", Remedy: "Dealers will replace it." }] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const added = await addWatchItem(env, "user", { year: 2021, make: "lexus", model: "rx" });
+    assert.ok(added.ok);
+    assert.equal(added.item.label, "2021 Lexus RX");
+    assert.equal((await readWatchList(env, "user"))[0]?.label, "2021 Lexus RX");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a saved vehicle uses the vPIC spelling for C300, CX-5 and F-150", async () => {
+  const cases = [
+    { year: 2021, make: "mercedes-benz", model: "c300", vpic: "C300", label: "2021 Mercedes-Benz C300" },
+    { year: 2021, make: "mazda", model: "cx-5", vpic: "CX-5", label: "2021 Mazda CX-5" },
+    { year: 2021, make: "ford", model: "f150", vpic: "F-150", label: "2021 Ford F-150" },
+  ];
+  for (const entry of cases) {
+    const env = watchEnv();
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify({ Results: [{ Model_Name: entry.vpic }] }), { status: 200 });
+      return new Response(JSON.stringify({ Count: 1, results: [{ NHTSACampaignNumber: "R-1", ReportReceivedDate: "01/02/2021", Component: "BRAKES", Consequence: "The part may fail.", Remedy: "Dealers will replace it." }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const added = await addWatchItem(env, "user", { year: entry.year, make: entry.make, model: entry.model });
+      assert.ok(added.ok);
+      assert.equal(added.item.label, entry.label);
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+});
+
 test("the watch check never reports a related model's recall as the saved car's recall", async () => {
   const env = watchEnv();
   await addWatchItem(env, "user", { year: 2021, make: "toyota", model: "corolla" }, async () => ({ status: "known", model: "Corolla" }));
