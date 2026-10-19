@@ -74,7 +74,7 @@ Install the dependencies with `npm install`. Sign in to Cloudflare once with `np
 npm install
 npx wrangler kv namespace create LIMITS
 npx wrangler dev          # http://127.0.0.1:8787
-npx tsx --test test/*.test.ts             # 170 tests, no network
+npx tsx --test test/*.test.ts             # 171 tests, no network
 node test/live-mcp.mjs http://127.0.0.1:8787   # live MCP check against the real sources
 ```
 

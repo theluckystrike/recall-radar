@@ -35,8 +35,20 @@ function wordCount(s: string): number {
 test("speak: zero recalls uses NHTSA name and never claims safety", () => {
   assert.equal(
     speak({ query: "honda accord", source: "nhtsa", total: 0, recalls: [] }),
-    "I found no recalls for honda accord in the NHTSA vehicle database. That does not prove it is safe, only that nothing is listed.",
+    "NHTSA lists no recalls filed under the name honda accord. Recalls are often filed under a specific model, such as C300 for a C-Class, so check the exact model on the registration too. That does not prove the car is safe.",
   );
+});
+
+test("a prefix that fits two vPIC models is not accepted as either", async () => {
+  const { searchVehicle } = await import("../src/sources/nhtsa.js");
+  const fetchFn = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Model S" }, { Model_Name: "Model X" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("{}", { status: 400 });
+  }) as typeof fetch;
+  await assert.rejects(searchVehicle("tesla", "model", 2021, fetchFn));
 });
 
 test("speak: zero recalls uses CPSC name", () => {

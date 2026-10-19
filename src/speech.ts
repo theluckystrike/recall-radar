@@ -183,6 +183,10 @@ export function followUps(recalls: Recall[]): string[] {
 export function speak(result: SearchResult): string {
   const first = result.recalls[0];
   if (result.total <= 0 || !first) {
+    if (result.source === "nhtsa") {
+      // NHTSA often files recalls under a specific model (C300 for a C-Class), so a family name can show none.
+      return spoken(`NHTSA lists no recalls filed under the name ${spokenQuery(result.query)}. Recalls are often filed under a specific model, such as C300 for a C-Class, so check the exact model on the registration too. That does not prove the car is safe.`);
+    }
     return spoken(`I found no recalls for ${spokenQuery(result.query)} in ${SOURCE_NAMES[result.source]}. That does not prove it is safe, only that nothing is listed.`);
   }
   const matched = /\(matched by /.test(result.query);

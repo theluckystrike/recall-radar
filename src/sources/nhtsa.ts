@@ -91,10 +91,12 @@ function modelMatch(names: string[], make: string, model: string): string | null
   if (exact) return exact;
   const prefixed = names.find((name) => makeKey && modelKey(name) === `${makeKey}${wanted}`);
   if (prefixed) return prefixed;
-  return names.find((name) => {
+  // A prefix match counts only when exactly one vPIC model fits, so "Model" never stands for "Model S".
+  const prefix = names.filter((name) => {
     const key = modelKey(name);
     return key.length >= 3 && wanted.length >= 3 && (key.startsWith(wanted) || wanted.startsWith(key));
-  }) ?? null;
+  });
+  return prefix.length === 1 ? prefix[0]! : null;
 }
 
 function maxAllowedYear(): number {
