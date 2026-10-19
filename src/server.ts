@@ -12,7 +12,7 @@ import {
 import { byRecency } from "./rank.js";
 import { followUps, speak, speakMany } from "./speech.js";
 import { CARD_MIME, CARD_NAME, CARD_URI, cardDocument } from "./card.js";
-import { cleanItem, singularPhrase } from "./query.js";
+import { cleanDrugItem, cleanItem, singularPhrase } from "./query.js";
 import { normalizeMake, normalizeModel } from "./router.js";
 import {
   MemoryStorage,
@@ -105,8 +105,8 @@ const vehicleWithRetry = (make: string, model: string, year: number) => searchVe
  * Clean the item words and search the plural and singular forms in parallel ("cantaloupes" and "cantaloupe"):
  * agencies file the same food under either form, and one form alone can miss the newest recalls.
  */
-export async function itemSearch(search: (q: string) => Promise<SearchResult>, raw: string): Promise<SearchResult> {
-  const q = cleanItem(raw);
+export async function itemSearch(search: (q: string) => Promise<SearchResult>, raw: string, clean: (query: string) => string = cleanItem): Promise<SearchResult> {
+  const q = clean(raw);
   const single = singularPhrase(q);
   if (!single) {
     const only = await search(q);
@@ -151,7 +151,7 @@ export const SEARCH_SOURCES: RecallSources = {
   vehicle: (make, model, year) => vehicleWithRetry(make, model, year),
   product: (query) => itemSearch(searchProducts, query),
   food: (query) => itemSearch(searchFood, query),
-  drug: (query) => itemSearch(searchDrug, query),
+  drug: (query) => itemSearch(searchDrug, query, cleanDrugItem),
 };
 
 function watchSearches(item: WatchItem, sources: RecallSources): Array<Promise<SearchResult>> {

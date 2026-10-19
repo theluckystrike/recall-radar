@@ -125,6 +125,14 @@ test("a watch item keeps every word the person gave, including the brand", () =>
   assert.deepEqual(classifyWatchItem({ item: "baby formula" }), { kind: "food", label: "baby formula", query: "infant formula" });
 });
 
+test("a watch item drops a leading my from its label but keeps the search words", () => {
+  assert.equal(classifyWatchItem({ item: "my wagon" }).label, "wagon");
+  assert.equal(classifyWatchItem({ item: "my wagon" }).query, "wagon");
+  assert.equal(classifyWatchItem({ item: "my peanut butter" }).label, "peanut butter");
+  // A word that merely starts with "my" keeps its letters.
+  assert.equal(classifyWatchItem({ item: "mystery box" }).label, "mystery box");
+});
+
 test("a watch item with accents searches the unaccented words", async () => {
   const env = watchEnv();
   const added = await addWatchItem(env, "user", { item: "jalapeño peppers" });

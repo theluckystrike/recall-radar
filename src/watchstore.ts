@@ -100,6 +100,8 @@ export function classifyWatchItem(input: WatchInput): WatchDraft {
   }
   const text = stripAccents((input.item ?? input.query ?? "").trim()).replace(/\s+/g, " ").slice(0, 80);
   if (text.length < 2) throw new TypeError("Give an item phrase between 2 and 80 characters.");
+  // "my wagon" is spoken as a label, so the leading possessive is dropped: "For your my wagon" is not speech.
+  const label = text.replace(/^my\s+/i, "").trim() || text;
   const routed = route(text);
   if (routed?.tool === "check_vehicle_recalls") {
     const { year, make: routedMake, model: routedModel } = routed.args;
@@ -107,11 +109,11 @@ export function classifyWatchItem(input: WatchInput): WatchDraft {
     return { kind: "vehicle", label, query: label, year, make: routedMake, model: routedModel };
   }
   if (routed?.tool === "ask_vehicle") throw new TypeError("That looks like a vehicle. Give the year, make and model so it can be checked.");
-  if (routed?.tool === "search_food_recalls") return { kind: "food", label: text, query: cleanItem(routed.args.query) };
-  if (routed?.tool === "search_drug_recalls") return { kind: "drug", label: text, query: cleanItem(routed.args.query) };
-  if (routed?.tool === "search_product_recalls") return { kind: "product", label: text, query: cleanItem(routed.args.query) };
-  if (routed?.tool === "check_all_recalls") return { kind: "all", label: text, query: cleanItem(routed.args.query) };
-  return { kind: "all", label: text, query: cleanItem(text) || text };
+  if (routed?.tool === "search_food_recalls") return { kind: "food", label, query: cleanItem(routed.args.query) };
+  if (routed?.tool === "search_drug_recalls") return { kind: "drug", label, query: cleanItem(routed.args.query) };
+  if (routed?.tool === "search_product_recalls") return { kind: "product", label, query: cleanItem(routed.args.query) };
+  if (routed?.tool === "check_all_recalls") return { kind: "all", label, query: cleanItem(routed.args.query) };
+  return { kind: "all", label, query: cleanItem(text) || text };
 }
 
 function watchId(draft: WatchDraft): string {

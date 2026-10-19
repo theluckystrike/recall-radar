@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanItem } from "../src/query.js";
+import { cleanDrugItem, cleanItem } from "../src/query.js";
 import { itemSearch } from "../src/server.js";
 import { searchFood } from "../src/sources/fda.js";
 
@@ -27,6 +27,32 @@ test("cleanItem refuses a query with no letters or Latin mixed with another scri
   for (const query of ["12345", "@#%", "日本", "ибупрофен", "ibuprofen 日本", "Ибупрофен ibuprofen"]) {
     assert.throws(() => cleanItem(query), /English letters/, query);
   }
+});
+
+test("cleanItem refuses a one letter query or a query with no letters", () => {
+  for (const query of ["a", "x", "-- --x", "7", "!"]) {
+    assert.throws(() => cleanItem(query), /English letters/, query);
+  }
+});
+
+test("cleanDrugItem reads a trailing ER or XR after a drug name as extended release", () => {
+  assert.equal(cleanDrugItem("metformin er"), "metformin extended release");
+  assert.equal(cleanDrugItem("metformin ER"), "metformin extended release");
+  assert.equal(cleanDrugItem("oxycodone xr"), "oxycodone extended release");
+  // The shorthand only expands in the drug path, and only after a drug name.
+  assert.equal(cleanItem("metformin er"), "metformin er");
+  assert.equal(cleanDrugItem("er"), "er");
+});
+
+test("the FDA drug search applies the extended release synonym", async () => {
+  const queries: string[] = [];
+  const search = async (q: string) => {
+    queries.push(q);
+    return { query: q, source: "fda-drug" as const, total: 0, recalls: [] };
+  };
+  await itemSearch(search, "metformin er", cleanDrugItem);
+  await itemSearch(search, "oxycodone xr", cleanDrugItem);
+  assert.deepEqual(queries, ["metformin extended release", "oxycodone extended release"]);
 });
 
 test("the server search path applies the baby formula synonym", async () => {

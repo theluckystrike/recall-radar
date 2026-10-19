@@ -28,7 +28,8 @@ export function cleanItem(query: string): string {
   const isLatin = (letter: string) => /\p{Script=Latin}/u.test(letter);
   const hasLatin = letters.some(isLatin);
   const hasOther = letters.some((letter) => !isLatin(letter));
-  if (!hasLatin || hasOther) throw new RangeError(REFUSAL);
+  // One letter is not a word: a stray letter in "-- --x" must never search the whole database.
+  if (!hasLatin || hasOther || letters.length < 2) throw new RangeError(REFUSAL);
   const words = plain.replace(/[^a-z0-9'&\- ]+/g, " ").split(/\s+/).filter(Boolean);
   const kept = words.filter((w) => !WORRY.has(w));
   let cleaned = (kept.length ? kept : words).join(" ").slice(0, 60);
@@ -38,6 +39,21 @@ export function cleanItem(query: string): string {
   // Nothing readable is left (for example a query in a non-Latin script). Never search the whole database.
   if (!cleaned) throw new RangeError(REFUSAL);
   return cleaned;
+}
+
+// FDA product descriptions spell the dosage form out, so the spoken shorthand "metformin er" must search "metformin extended release".
+const DRUG_FORMS: Record<string, string> = { er: "extended release", xr: "extended release" };
+
+/** "metformin er" -> "metformin extended release"; a shorthand after a drug name only, so a lone "er" is left alone. */
+export function expandDrugForm(query: string): string {
+  const words = query.split(" ").filter(Boolean);
+  const form = DRUG_FORMS[(words[words.length - 1] ?? "").toLowerCase()];
+  return form && words.length > 1 ? [...words.slice(0, -1), form].join(" ") : query;
+}
+
+/** The item for the FDA drug search: the cleaned item with a trailing ER or XR read as extended release. */
+export function cleanDrugItem(query: string): string {
+  return expandDrugForm(cleanItem(query));
 }
 
 /** "cantaloupes" -> "cantaloupe", "berries" -> "berry"; used only as a second try after zero results. */

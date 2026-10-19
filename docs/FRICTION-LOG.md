@@ -86,4 +86,16 @@ Build Ship Shape Amazon Developer hackathon, Alexa+ track. Each entry follows th
 | Workaround | the spoken answer is complete on its own and is unchanged, and the newest recall also travels in `structuredContent` so a host that renders the card can draw it, while a voice only client simply speaks the answer. |
 | Suggestion | a way to see which MCP App resources an Alexa+ screen will render, and a clear statement of when, so a builder knows whether the card will ever be seen. |
 
+## 8. The NHTSA recalls API answering HTTP 400 for a model with no recalls
+
+| Field | Detail |
+|---|---|
+| Task | answer whether a car has recalls, from a spoken model year, make and model. |
+| Steps | called `https://api.nhtsa.gov/recalls/recallsByVehicle?make=...&model=...&modelYear=...`, and when it returned no recalls, asked `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/{make}/modelyear/{year}?format=json` for that year's model names from that make. |
+| Expected | HTTP 200 with a `Count` of 0 when a real model has no recalls, and the same model name the person said. |
+| Actual | the recalls API answers HTTP 400 for a real model that has no recalls, such as a 2026 Toyota Camry, and the code reads that 400 as an empty list, `Count` 0, so a 400 alone can never be read as an unknown model. The two APIs also name models differently. vPIC lists `Mazda3` where the person said `3`, and in some families the recalls sit only under a trim, `C300` for a `C-Class`, so an empty result under the spoken name is not proof that the car is unknown or free of recalls. |
+| Severity | high, because a false "not found" or "no recalls" on a safety product is the worst answer this tool can give. |
+| Workaround | on a 400 or an empty list, confirm the model with vPIC. When vPIC lists the model, accept it. When the vPIC name differs from the spoken one, search the recalls API again under the vPIC name, so `3` finds the recalls filed under `Mazda3`, and the answer names the model that was searched. When vPIC does not list the model, say it is not listed. When vPIC fails, say the vehicle service is unavailable, never unknown and never no recalls. |
+| Suggestion | return HTTP 200 with a `Count` of 0 for a valid model that has no recalls, and document that recalls are filed under the vPIC model name, or let a family name be answered with its listed sub-models. |
+
 Built by Michael Lip, github.com/theluckystrike.
