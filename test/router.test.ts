@@ -12,6 +12,9 @@ const cases: Array<[string, string, Record<string, unknown> | null]> = [
   ["is my 2018 accord recalled", "check_vehicle_recalls", { year: 2018, make: "honda", model: "accord" }],
   ["is my honda accord recalled", "ask_vehicle", { make: "honda", model: "accord", missing: "year" }],
   ["is my ford recalled", "ask_vehicle", { make: "ford", model: "", missing: "model" }],
+  ["is my car recalled", "ask_vehicle", { make: "", model: "", missing: "vehicle" }],
+  ["is my truck recalled", "ask_vehicle", { make: "", model: "", missing: "vehicle" }],
+  ["are there recalls on my van", "ask_vehicle", { make: "", model: "", missing: "vehicle" }],
   ["is there a recall on my 2020 tesla model 3", "check_vehicle_recalls", { year: 2020, make: "tesla", model: "model 3" }],
   ["any recalls on my 2021 ram 1500", "check_vehicle_recalls", { year: 2021, make: "ram", model: "1500" }],
   ["check my 2019 mazda 3", "check_vehicle_recalls", { year: 2019, make: "mazda", model: "3" }],
@@ -86,6 +89,11 @@ test("never routes a food or a medicine to the product-only tool", () => {
   for (const u of ["spinach", "frozen vegetables", "similac", "tylenol", "sunscreen", "deli meat", "alfalfa sprouts"]) {
     assert.notEqual(route(`any recalls on ${u}`)?.tool, "search_product_recalls", u);
   }
+});
+
+test("a vehicle kind word next to a product word stays a product search", () => {
+  assert.equal(route("is my car seat recalled")?.tool, "check_all_recalls");
+  assert.deepEqual(route("is my car seat recalled")?.args, { query: "car seat" });
 });
 
 test("caps long input and survives hostile text", () => {

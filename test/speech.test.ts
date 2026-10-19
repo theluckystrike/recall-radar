@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { speak, speakMany, speakWatch, spokenTitle } from "../src/speech";
+import { followUps, speak, speakMany, speakWatch, spokenTitle } from "../src/speech";
 import type { Recall, SearchResult, Source } from "../src/types";
 
 function recall(overrides: Partial<Recall>): Recall {
@@ -165,6 +165,26 @@ test("speak: an empty FDA hazard leaves no double space", () => {
     out,
     "I found 1 recall that mentions chocolate bar. The newest is from January 2023. It is Chocolate Bar. Return it.",
   );
+});
+
+test("no speech helper ever puts two spaces in a row", () => {
+  const lamp = recall({ id: "L-1", title: "Lamp", hazard: "", remedy: "" });
+  const food = recall({ id: "F-1", source: "fda-food", date: "2024-03-01", title: "Chocolate Bar", hazard: "Undeclared milk", remedy: "" });
+  const outputs = [
+    speak({ query: "lamp", source: "cpsc", total: 0, recalls: [] }),
+    speak({ query: "lamp", source: "cpsc", total: 1, recalls: [lamp] }),
+    speak({ query: "lamp", source: "cpsc", total: 2, recalls: [lamp, recall({ id: "L-2" })] }),
+    speakMany([{ query: "lamp", source: "cpsc", total: 0, recalls: [] }], ["cpsc", "fda-food"]),
+    speakMany([{ query: "lamp", source: "cpsc", total: 2, recalls: [lamp, recall({ id: "L-2" })] }]),
+    speakWatch({ totalItems: 1, newItems: 1, failedItems: 0, recall: lamp, newRecallCount: 1 }),
+    speakWatch({ totalItems: 3, newItems: 1, failedItems: 1, recall: lamp, newRecallCount: 3, label: "lamp" }),
+    speakWatch({ totalItems: 3, newItems: 0, failedItems: 1, newRecallCount: 0, emptyLabels: ["crib"] }),
+    ...followUps([lamp, food]),
+  ];
+  for (const out of outputs) {
+    assert.ok(!out.includes("  "), `double space in ${JSON.stringify(out)}`);
+    assert.equal(out, out.trim(), `stray edge space in ${JSON.stringify(out)}`);
+  }
 });
 
 test("speak: drug recalls end with the pharmacist sentence", () => {
@@ -332,10 +352,20 @@ test("speakWatch with several new items says the count then names the most impor
 
 test("speakWatch says first check when nothing was seen before", () => {
   const r = recall({ title: "Widget", hazard: "May cause injury.", remedy: "Contact the manufacturer." });
-  const out = speakWatch({ totalItems: 2, newItems: 1, failedItems: 1, recall: r, newRecallCount: 1, firstCheck: true });
-  assert.match(out, /^On this first check, 1 of your 2 items has a new recall\./);
+  const out = speakWatch({ totalItems: 2, newItems: 1, failedItems: 1, checkedItems: 1, recall: r, newRecallCount: 1, firstCheck: true });
+  assert.match(out, /^On this first check, your item has a new recall\./);
   assert.match(out, /I could not fully check 1 of your 2 items/);
   assert.ok(!out.includes(".I could not"), out);
+});
+
+test("speakWatch counts only the items that were checked in its lead", () => {
+  const r = recall({ title: "Widget", hazard: "May cause injury.", remedy: "Contact the manufacturer." });
+  const out = speakWatch({ totalItems: 4, newItems: 2, failedItems: 2, checkedItems: 2, recall: r, newRecallCount: 2 });
+  assert.match(out, /^2 of your 2 items have a new recall since you last asked\./);
+  // The lead sentence counts the items that were checked. The total appears only in the unavailable sentence.
+  const lead = out.slice(0, out.indexOf("I could not"));
+  assert.ok(!lead.includes("2 of your 4 items"), out);
+  assert.match(out, /I could not fully check 2 of your 4 items/);
 });
 
 test("speakWatch on a first check with zero results says no recalls found", () => {

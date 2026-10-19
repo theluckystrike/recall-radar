@@ -73,6 +73,13 @@ test("source and severity labels are the plain words a screen shows", () => {
   assert.match(renderRecallCard({ ...HOSTILE, severity: undefined }), />Severity not stated</);
 });
 
+test("a CPSC card treats a death or fatal mention as high severity", () => {
+  assert.match(renderRecallCard({ ...HOSTILE, severity: undefined, hazard: "The crib can cause death." }), />High severity</);
+  assert.match(renderRecallCard({ ...HOSTILE, severity: undefined, title: "A child died after a fall", hazard: "Fall risk." }), />High severity</);
+  assert.match(renderRecallCard({ ...HOSTILE, severity: undefined, hazard: "A fatal collapse risk." }), />High severity</);
+  assert.match(renderRecallCard({ ...HOSTILE, severity: undefined, hazard: "A fire risk." }), />Severity not stated</);
+});
+
 test("the card document is self contained and carries inline CSS only", () => {
   const html = cardDocument();
   assert.match(html, /^<!doctype html>/);

@@ -62,4 +62,28 @@ Build Ship Shape Amazon Developer hackathon, Alexa+ track. Each entry follows th
 | Workaround | an Alexa+ simulator page that routes speech to the MCP tools the way the Alexa+ model would, with system text-to-speech. |
 | Suggestion | a public test endpoint or sandbox for self-hosted MCP servers on Alexa+. |
 
+## 6. Identifying a household from a self-hosted MCP server
+
+| Field | Detail |
+|---|---|
+| Task | keep one private watch list per household across requests. |
+| Steps | looked for a stable household id in the request that reaches the MCP server. |
+| Expected | the platform sends an Alexa user id with every call, so the server can name the list after it. |
+| Actual | the MCP request carries no Alexa user id this repo can rely on. The server accepts an `X-Alexa-User-Id` header, but no code here receives one, so a self-hosted server had to mint its own list id. |
+| Severity | high, because the watch list is private and must never be shared between households. |
+| Workaround | the watch list is keyed by the server's own id, taken from `X-User-Id`, `X-Alexa-User-Id`, `X-Amazon-User-Id`, `mcp-session-id` or a `user_id` query parameter. The simulator makes one random id, keeps it in browser local storage and sends it as `X-User-Id` with every request. When no id arrives the watch tools refuse the request instead of using one shared list. |
+| Suggestion | document the user id header a self-hosted MCP server can expect from Alexa, so the server does not have to invent its own identifier. |
+
+## 7. Proving an MCP Apps card renders on an Alexa+ screen
+
+| Field | Detail |
+|---|---|
+| Task | show the newest recall as a visual card beside the spoken answer. |
+| Steps | built the card as an MCP Apps UI resource at `ui://recall-radar/card` with the `text/html;profile=mcp-app` media type, registered it on the server, and linked it from the search tools and `check_my_watch_list` through the tool `_meta.ui` resource link. |
+| Expected | a host with a screen loads the resource and renders the card when the tool runs. |
+| Actual | the repo shows the resource, the media type and the tool links, but it holds no proof that any Alexa+ screen renders the card. |
+| Severity | medium, because the card is an extra view and the answer must not depend on it. |
+| Workaround | the spoken answer is complete on its own and is unchanged, and the newest recall also travels in `structuredContent` so a host that renders the card can draw it, while a voice only client simply speaks the answer. |
+| Suggestion | a way to see which MCP App resources an Alexa+ screen will render, and a clear statement of when, so a builder knows whether the card will ever be seen. |
+
 Built by Michael Lip, github.com/theluckystrike.

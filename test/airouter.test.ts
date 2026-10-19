@@ -27,6 +27,16 @@ test("a bare model answers a pending 'which model' question", async () => {
   assert.deepEqual(route?.args, { make: "ford", model: "f-150", missing: "year" });
 });
 
+test("a vehicle kind with no make or model asks for the year, make and model", async () => {
+  assert.deepEqual(validate({ tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } }), {
+    tool: "ask_vehicle",
+    args: { make: "", model: "", missing: "vehicle" },
+  });
+  const { route, by } = await aiRoute(noModel, "is my truck recalled", null);
+  assert.equal(by, "rules");
+  assert.deepEqual(route, { tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } });
+});
+
 test("model output is validated strictly", () => {
   assert.equal(validate({ tool: "check_vehicle_recalls", args: { year: 1800, make: "ford", model: "t" } }), null);
   assert.equal(validate({ tool: "delete_everything", args: {} }), null);

@@ -22,7 +22,7 @@ Tools:
 - remove_from_watch_list {"item": string}: remove one saved item from the watch list.
 - check_my_watch_list {}: check every saved item for new recalls.
 Special replies:
-- {"tool":"ask_vehicle","args":{"make":..., "model":..., "missing":"year"|"model"}} when a vehicle question lacks the year or the model.
+- {"tool":"ask_vehicle","args":{"make":..., "model":..., "missing":"year"|"model"}} when a vehicle question lacks the year or the model, or {"tool":"ask_vehicle","args":{"make":"","model":"","missing":"vehicle"}} when it names only a vehicle kind ("my car", "my truck", "the van") with no make and no model.
 - {"tool":"more","args":{}} when the person wants to hear more of the previous answer ("more", "yes", "go on", "the others").
 - {"tool":"none","args":{}} when it is not a recall question.
 The query is the item only: drop words about the worry ("safe", "outbreak", "listeria", "still okay", "to take").
@@ -57,8 +57,10 @@ export function validate(raw: unknown): RouteResult | null {
   if (tool === "more") return { tool: "more", args: {} };
   if (tool === "check_vehicle_recalls") return validateVehicle(a, maxYear);
   if (tool === "ask_vehicle") {
-    const make = str(a.make, 30); const missing = a.missing === "model" ? "model" : "year";
-    return make ? { tool, args: { make, model: str(a.model, 40) ?? "", missing } } : null;
+    const missing = a.missing === "model" ? "model" : a.missing === "vehicle" ? "vehicle" : "year";
+    const make = str(a.make, 30) ?? "";
+    if (missing !== "vehicle" && !make) return null;
+    return { tool, args: { make, model: str(a.model, 40) ?? "", missing } };
   }
   if (tool === "search_food_recalls" || tool === "search_drug_recalls" || tool === "check_all_recalls" || tool === "search_product_recalls") {
     const query = str(a.query, 60);

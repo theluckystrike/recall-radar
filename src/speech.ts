@@ -169,12 +169,12 @@ function fit(lead: string, recall: Recall, tail: string, query = "", subject = "
   return `${lead} ${detail({ ...recall, remedy: "", hazard: "" }, query, subject)}${tailText}`;
 }
 
-/** One short sentence per further recall, for "more": "From March 2023: the seat belts. Dealers will replace the buckles." */
+/** One short sentence per further recall, for "more": "From March 2023, the seat belts. Dealers will replace the buckles." */
 export function followUps(recalls: Recall[]): string[] {
   return recalls.slice(1, 1 + FOLLOW_LIMIT).map((r) => {
     const what = r.source === "nhtsa" ? spokenTitle(r) : spokenTitle(r);
     const why = core(firstSentence(lowerIfShouting(scrub(r.source, r.hazard))));
-    const line = spoken(`From ${monthYear(r.date)}: ${tidy(what)}. ${why}`.replace(/\s+(in|of|and|the|with|for|to|from)\.$/i, "."));
+    const line = spoken(`From ${monthYear(r.date)}, ${tidy(what)}. ${why}`.replace(/\s+(in|of|and|the|with|for|to|from)\.$/i, "."));
     return line.split(" ").length > 35 ? `${line.split(" ").slice(0, 35).join(" ").replace(/[\s,;:-]+$/, "")}.` : line;
   });
 }
@@ -194,6 +194,7 @@ export interface WatchSpeech {
   totalItems: number;
   newItems: number;
   failedItems: number;
+  checkedItems?: number;
   recall?: Recall;
   newRecallCount: number;
   query?: string;
@@ -210,6 +211,8 @@ function labelList(labels: string[]): string {
 /** The watch list answer: how many saved items have something new, then the one most important recall named by its item. */
 export function speakWatch(input: WatchSpeech): string {
   const { totalItems, newItems, failedItems, recall, newRecallCount, label, firstCheck = false, emptyLabels = [] } = input;
+  // The lead counts only the items that were really checked, so a failed or skipped item is never counted as clear.
+  const checked = input.checkedItems ?? totalItems;
   if (totalItems === 0) return spoken("Your watch list is empty. Say add to my watch list and the item you want checked.");
   if (failedItems >= totalItems) return spoken("I could not check your watch list because the recall sources were unavailable. Please try again in a minute.");
   const unavailable = failedItems > 0 ? `I could not fully check ${failedItems} of your ${totalItems} items because a source was unavailable.` : "";
@@ -220,9 +223,9 @@ export function speakWatch(input: WatchSpeech): string {
     const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
     return spoken([unavailable, none, empty].filter(Boolean).join(" "));
   }
-  const lead = totalItems === 1
+  const lead = checked <= 1
     ? (firstCheck ? "On this first check, your item has a new recall." : "Your item has a new recall since you last asked.")
-    : `${firstCheck ? "On this first check, " : ""}${newItems} of your ${totalItems} items ${newItems === 1 ? "has" : "have"} a new recall${firstCheck ? "." : " since you last asked."}`;
+    : `${firstCheck ? "On this first check, " : ""}${newItems} of your ${checked} items ${newItems === 1 ? "has" : "have"} a new recall${firstCheck ? "." : " since you last asked."}`;
   const empty = failedItems === 0 && emptyLabels.length > 0 ? `No recalls found for ${labelList(emptyLabels)}.` : "";
   const tail = [unavailable, empty, others(newRecallCount, Math.min(newRecallCount, 5))].filter(Boolean).join(" ");
   return spoken(fit(lead, recall, tail, input.query ?? "", label ?? ""));

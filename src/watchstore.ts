@@ -232,10 +232,12 @@ export class WatchStore {
     const fresh: Array<{ item: WatchItem; recall: Recall }> = [];
     const emptyLabels: string[] = [];
     let failedItems = 0;
+    let checkedItems = 0;
     for (const { item, recalls, failed } of checked) {
       const now = currentById.get(item.id);
       if (!now) continue;
       if (failed) failedItems++;
+      else checkedItems++;
       if (!failed && recalls.length === 0) emptyLabels.push(item.label);
       for (const recall of recalls) {
         if (!item.seen.includes(recall.id) && !now.seen.includes(recall.id)) fresh.push({ item, recall });
@@ -251,7 +253,7 @@ export class WatchStore {
     fresh.sort((a, b) => importance(a.recall, b.recall));
     const recalls = fresh.map((entry) => entry.recall);
     const newItems = new Set(fresh.map((entry) => entry.item.id)).size;
-    const text = speakWatch({ totalItems: merged.length, newItems, failedItems, recall: recalls[0], newRecallCount: recalls.length, query: fresh[0]?.item.query, label: fresh[0]?.item.label, firstCheck, emptyLabels });
+    const text = speakWatch({ totalItems: merged.length, newItems, failedItems, checkedItems, recall: recalls[0], newRecallCount: recalls.length, query: fresh[0]?.item.query, label: fresh[0]?.item.label, firstCheck, emptyLabels });
     return { totalItems: merged.length, newItems, failedItems, recalls, followUps: followUps(recalls), text, items: merged };
   }
 }

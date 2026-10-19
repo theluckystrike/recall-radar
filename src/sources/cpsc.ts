@@ -41,8 +41,13 @@ function firstName(raw: unknown): string {
   return "";
 }
 
-/** A hazard or title that mentions death or fatalities outranks an ordinary CPSC record. */
-const DEATH_MENTION = /\b(?:deaths?|fatalit(?:y|ies))\b/i;
+/** A hazard or title that mentions death or a fatal outcome outranks an ordinary CPSC record. */
+export const CPSC_DEATH_MENTION = /\b(?:death|deaths|died|fatal(?:it(?:y|ies))?)\b/i;
+
+/** True when a CPSC recall title or hazard mentions death or a fatal outcome. The normaliser and the card share this rule. */
+export function cpscDeathMention(recall: Pick<Recall, "source" | "title" | "hazard">): boolean {
+  return recall.source === "cpsc" && (CPSC_DEATH_MENTION.test(recall.title) || CPSC_DEATH_MENTION.test(recall.hazard));
+}
 
 function toRecall(raw: unknown): Recall | null {
   if (!isRecord(raw)) return null;
@@ -60,7 +65,7 @@ function toRecall(raw: unknown): Recall | null {
     remedy: cap(firstName(raw.Remedies), MAX_TEXT),
     url: clean(str(raw.URL)),
   };
-  if (DEATH_MENTION.test(title) || DEATH_MENTION.test(hazard)) recall.severity = "high";
+  if (cpscDeathMention(recall)) recall.severity = "high";
   return recall;
 }
 

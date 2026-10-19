@@ -6,7 +6,7 @@ import { cleanItem, stripAccents } from "./query.js";
 export type RouteResult =
   | { tool: "check_vehicle_recalls"; args: { year: number; make: string; model: string } }
   | { tool: "search_food_recalls" | "search_drug_recalls" | "search_product_recalls" | "check_all_recalls"; args: { query: string } }
-  | { tool: "ask_vehicle"; args: { make: string; model: string; missing: "year" | "model" } }
+  | { tool: "ask_vehicle"; args: { make: string; model: string; missing: "year" | "model" | "vehicle" } }
   | { tool: "add_to_watch_list"; args: { year: number; make: string; model: string } | { item: string } }
   | { tool: "remove_from_watch_list"; args: { item: string } }
   | { tool: "check_my_watch_list"; args: Record<string, never> }
@@ -85,6 +85,11 @@ const MODEL_MAKE: Record<string, string> = {
   "rogue": "nissan", "sentra": "nissan", "outback": "subaru", "forester": "subaru", "elantra": "hyundai", "tucson": "hyundai",
   "sonata": "hyundai", "jetta": "volkswagen", "wrangler": "jeep", "grand cherokee": "jeep", "model 3": "tesla", "model y": "tesla",
 };
+
+/** Words that name a vehicle kind but not a make or a model: "my car", "the truck". */
+const VEHICLE_NOUNS = new Set(["car", "cars", "truck", "trucks", "suv", "suvs", "van", "vans", "minivan", "minivans", "motorcycle",
+  "motorcycles", "motorbike", "motorbikes", "automobile", "automobiles", "vehicle", "vehicles", "sedan", "sedans", "coupe", "coupes",
+  "convertible", "convertibles", "pickup", "pickups", "hatchback", "hatchbacks", "wagon", "wagons"]);
 
 /** Words that mark a thing as a product even when a food word appears ("rice cooker", "apple watch"). */
 const PRODUCT_NOUNS = new Set(["watch", "spray", "cooker", "maker", "cup", "bottle", "toy", "crib", "stroller", "seat", "heater", "dresser",
@@ -233,6 +238,11 @@ export function route(utterance: string): RouteResult | null {
   const words = text.split(" ");
   const vehicle = vehicleRoute(text, words);
   if (vehicle) return vehicle;
+  // "is my car recalled" names a vehicle kind but no make or model: ask for all three instead of searching products.
+  const kinds = itemQuery(words).split(" ").filter(Boolean);
+  if (kinds.length > 0 && kinds.every((word) => VEHICLE_NOUNS.has(word))) {
+    return { tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } };
+  }
   for (const [phrase, kind, target] of PHRASES) {
     // An unchanged phrase is already the canonical search form ("cough syrup"); a synonym keeps the other words ("Similac baby formula").
     if (` ${text} `.includes(` ${phrase} `)) return { tool: kind === "drug" ? "search_drug_recalls" : "search_food_recalls", args: { query: target === phrase ? phrase : synonymQuery(text) } };

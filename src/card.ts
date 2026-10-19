@@ -1,3 +1,4 @@
+import { cpscDeathMention } from "./sources/cpsc.js";
 import type { Recall, Source } from "./types.js";
 
 // The visual recall card, served as an MCP Apps UI resource. The extension is
@@ -29,6 +30,11 @@ export function severityLabel(severity?: Recall["severity"]): string {
   return "Severity not stated";
 }
 
+/** The severity to show. A CPSC recall that mentions death or a fatal outcome counts as high, the same rule the watch list ranking uses. */
+export function effectiveSeverity(recall: Recall): Recall["severity"] {
+  return recall.severity ?? (cpscDeathMention(recall) ? "high" : undefined);
+}
+
 /** Escape every character that could break out of HTML text or an attribute value. */
 export function escapeHtml(value: string): string {
   return value
@@ -53,7 +59,7 @@ export function renderRecallCard(recall: Recall): string {
     : "";
   return [
     `<article class="rr-card">`,
-    `<header class="rr-head"><span class="rr-source">${escapeHtml(sourceLabel(recall.source))}</span><span class="rr-severity">${escapeHtml(severityLabel(recall.severity))}</span></header>`,
+    `<header class="rr-head"><span class="rr-source">${escapeHtml(sourceLabel(recall.source))}</span><span class="rr-severity">${escapeHtml(severityLabel(effectiveSeverity(recall)))}</span></header>`,
     `<h2 class="rr-title">${escapeHtml(recall.title)}</h2>`,
     `<p class="rr-date">${escapeHtml(recall.date)}</p>`,
     `<p class="rr-field"><span class="rr-field-name">Hazard</span><span class="rr-field-value">${escapeHtml(recall.hazard)}</span></p>`,
@@ -108,7 +114,10 @@ export function cardDocument(initial?: Recall): string {
   function sourceName(source) {
     return source === "nhtsa" ? "NHTSA" : source === "cpsc" ? "CPSC" : (source === "fda-food" || source === "fda-drug") ? "FDA" : "Recall source";
   }
-  function severityName(severity) {
+  var DEATH_MENTION = /\\b(?:death|deaths|died|fatal(?:it(?:y|ies))?)\\b/i;
+  function severityName(recall) {
+    var severity = recall ? recall.severity : undefined;
+    if (!severity && recall && recall.source === "cpsc" && (DEATH_MENTION.test(String(recall.title || "")) || DEATH_MENTION.test(String(recall.hazard || "")))) severity = "high";
     return severity === "high" ? "High severity" : severity === "medium" ? "Medium severity" : severity === "low" ? "Low severity" : "Severity not stated";
   }
   function httpOnly(url) {
@@ -143,7 +152,7 @@ export function cardDocument(initial?: Recall): string {
     var head = document.createElement("header");
     head.className = "rr-head";
     head.appendChild(text("span", "rr-source", sourceName(recall.source)));
-    head.appendChild(text("span", "rr-severity", severityName(recall.severity)));
+    head.appendChild(text("span", "rr-severity", severityName(recall)));
     card.appendChild(head);
     card.appendChild(text("h2", "rr-title", recall.title || "Recall"));
     card.appendChild(text("p", "rr-date", recall.date));

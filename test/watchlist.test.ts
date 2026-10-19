@@ -351,6 +351,24 @@ test("check says an unavailable source is never reported as no recalls", async (
   assert.ok(!partial.text.toLowerCase().includes("no recalls"));
 });
 
+test("the watch answer lead counts only the items the check reached", async () => {
+  const env = watchEnv();
+  await addWatchItem(env, "user", { item: "crib" });
+  await addWatchItem(env, "user", { item: "stroller" });
+  await addWatchItem(env, "user", { item: "kettle" });
+  const crib = makeRecall({ id: "CRIB-1", title: "Crib", date: "2024-02-01", severity: "high" });
+  const lookup = async (item: WatchItem) => {
+    if (item.query === "kettle") return { recalls: [], failed: true };
+    return { recalls: item.query === "crib" ? [crib] : [], failed: false };
+  };
+  const check = await checkWatchList(env, "user", lookup);
+  assert.match(check.text, /1 of your 2 items has a new recall/);
+  // The lead counts the two items the check reached. The three item total appears only in the unavailable sentence.
+  const lead = check.text.slice(0, check.text.indexOf("I could not"));
+  assert.ok(!lead.includes("1 of your 3 items"), check.text);
+  assert.match(check.text, /could not fully check 1 of your 3 items/);
+});
+
 // ---- WatchStore: the plain class the Durable Object and the in-memory fallback both delegate to ----
 
 class FakeStorage {

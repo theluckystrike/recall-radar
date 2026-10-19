@@ -434,7 +434,9 @@
   function askVehicle(args) {
     pendingVehicle = { make: args.make, model: args.model };
     args = { make: titleCase(args.make), model: titleCase(args.model), missing: args.missing };
-    say(args.missing === "model" ? "Which " + args.make + " model is it?" : "Which model year is your " + args.make + " " + args.model + "?");
+    if (args.missing === "vehicle") say("Which vehicle is it? Say the model year, make and model.");
+    else if (args.missing === "model") say("Which " + args.make + " model is it?");
+    else say("Which model year is your " + args.make + " " + args.model + "?");
   }
 
   /** Completes a pending vehicle question from the next answer, such as "2018" or "accord". */
