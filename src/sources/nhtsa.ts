@@ -23,10 +23,13 @@ export const UNKNOWN_VEHICLE_MESSAGE = UNKNOWN_VEHICLE;
 /** The prefix fits several vPIC models, so the answer is a question naming the real choices. */
 export class AmbiguousVehicleError extends SourceError {
   readonly options: string[];
-  constructor(options: string[]) {
-    super(modelQuestion(options));
+  /** True when vPIC listed more models than the question could name, so the list is not complete. */
+  readonly truncated: boolean;
+  constructor(options: string[], truncated = false) {
+    super(modelQuestion(options, truncated));
     this.name = "AmbiguousVehicleError";
     this.options = options;
+    this.truncated = truncated;
   }
 }
 
@@ -34,10 +37,12 @@ export function isAmbiguousVehicleError(error: unknown): error is AmbiguousVehic
   return error instanceof AmbiguousVehicleError;
 }
 
-function modelQuestion(options: string[]): string {
-  const choices = options.length <= 1
-    ? (options[0] ?? "")
-    : `${options.slice(0, -1).join(", ")} or ${options[options.length - 1]}`;
+function modelQuestion(options: string[], truncated = false): string {
+  // A cut list is never presented as complete: the open choice lets the person name a model it omitted.
+  const list = truncated ? [...options, "another model"] : options;
+  const choices = list.length <= 1
+    ? (list[0] ?? "")
+    : `${list.slice(0, -1).join(", ")} or ${list[list.length - 1]}`;
   return choices ? `Which one, ${choices}?` : "Which model do you mean?";
 }
 
@@ -87,6 +92,12 @@ interface NhtsaModelsResponse {
   Results?: unknown;
 }
 
+/** A different car that shares the spoken name, with the recalls it has: never added to the user's total. */
+export interface RelatedModelRecall {
+  model: string;
+  count: number;
+}
+
 /** What the answer should say about a family name and the related models searched under it. */
 export interface VehicleSearchNote {
   model: string;
@@ -94,6 +105,8 @@ export interface VehicleSearchNote {
   searchedModels: string[];
   /** The searched sub-models that actually had recalls, so the answer can say what they were filed under. */
   filedUnder: string[];
+  /** Related models that are a different car and have recalls: named separately, never merged into the total. */
+  relatedRecalls: RelatedModelRecall[];
   example?: string;
 }
 
@@ -133,7 +146,11 @@ function vpicCacheFor(fetchFn: FetchFn): Map<string, VpicCacheEntry> {
 interface ModelLookup {
   match: string | null;
   options: string[];
+  truncated: boolean;
 }
+
+/** "Model 3" sorts before "Model S" and "Model 10" after "Model 3", not before "Model 2". */
+const naturalOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 /**
  * A vPIC name matches the wanted model when its key is the wanted key, the make key followed by the
@@ -143,12 +160,12 @@ interface ModelLookup {
  */
 function modelLookup(names: string[], make: string, model: string): ModelLookup {
   const wanted = modelKey(model);
-  if (!wanted) return { match: null, options: [] };
+  if (!wanted) return { match: null, options: [], truncated: false };
   const makeKey = modelKey(make);
   const exact = names.find((name) => modelKey(name) === wanted);
-  if (exact) return { match: exact, options: [] };
+  if (exact) return { match: exact, options: [], truncated: false };
   const prefixed = names.find((name) => makeKey && modelKey(name) === `${makeKey}${wanted}`);
-  if (prefixed) return { match: prefixed, options: [] };
+  if (prefixed) return { match: prefixed, options: [], truncated: false };
   // A prefix match counts only when exactly one vPIC model fits, so "Model" never stands for "Model S".
   const prefix: string[] = [];
   const seen = new Set<string>();
@@ -160,11 +177,16 @@ function modelLookup(names: string[], make: string, model: string): ModelLookup 
     seen.add(key);
     prefix.push(name);
   }
-  if (prefix.length === 1) return { match: prefix[0]!, options: [] };
+  if (prefix.length === 1) return { match: prefix[0]!, options: [], truncated: false };
   if (prefix.length > 1) {
-    return { match: null, options: prefix.sort((a, b) => a.localeCompare(b)).slice(0, MAX_MODEL_OPTIONS) };
+    const sorted = prefix.sort((a, b) => naturalOrder.compare(a, b));
+    return {
+      match: null,
+      options: sorted.slice(0, MAX_MODEL_OPTIONS),
+      truncated: sorted.length > MAX_MODEL_OPTIONS,
+    };
   }
-  return { match: null, options: [] };
+  return { match: null, options: [], truncated: false };
 }
 
 function maxAllowedYear(): number {
@@ -250,14 +272,42 @@ function displayModelToken(token: string, known?: string): string {
   return titleCase(token);
 }
 
-/** The model spelling for the answer, keeping the capitals the speaker or the agency used ("2021 Lexus RX"). */
-function displayModelName(spoken: string, known?: unknown): string {
-  const knownTokens = (typeof known === "string" ? known : "").trim().split(/\s+/);
-  return spoken
+/**
+ * The display spelling of a model on its own: tokens the speaker wrote in capitals stay ("RX") and a
+ * short alphanumeric name keeps its digits ("C300", "F-150"). Shared with the watch list so a saved
+ * vehicle reads the way the nhtsa module writes it.
+ */
+export function displayVehicleModel(model: string): string {
+  return model
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .map((token, i) => displayModelToken(token, knownTokens[i]))
+    .map((token) => displayModelToken(token))
+    .join(" ");
+}
+
+/**
+ * The model spelling for the answer, keeping the capitals the speaker or the agency used ("2021 Lexus
+ * RX"). When the agency names the model, its full spelling wins, so "RX 350" is never cut to "RX", but
+ * each agency token is still cased the way the speaker wrote it when the two line up ("ACCORD" -> "Accord").
+ */
+function displayModelName(spoken: string, known?: unknown): string {
+  const spokenTokens = spoken.trim().split(/\s+/).filter(Boolean);
+  const knownText = (typeof known === "string" ? known : "").trim();
+  if (!knownText) return spokenTokens.map((token) => displayModelToken(token)).join(" ");
+  const used = new Set<number>();
+  return knownText
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => {
+      const key = modelKey(token);
+      const at = spokenTokens.findIndex((candidate, i) => !used.has(i) && modelKey(candidate) === key);
+      if (at >= 0) {
+        used.add(at);
+        return displayModelToken(spokenTokens[at]!, token);
+      }
+      return displayModelToken(token, token);
+    })
     .join(" ");
 }
 
@@ -419,7 +469,7 @@ async function confirmModel(
   const names = await requestVpicModels(make, year, fetchFn);
   const lookup = modelLookup(names, make, model);
   if (lookup.match) return lookup.match;
-  if (lookup.options.length > 1) throw new AmbiguousVehicleError(lookup.options);
+  if (lookup.options.length > 1) throw new AmbiguousVehicleError(lookup.options, lookup.truncated);
   throw new SourceError(`${UNKNOWN_VEHICLE}: ${make} ${model} ${year}`);
 }
 
@@ -516,17 +566,27 @@ function relatedModel(name: string, familyKey: string): boolean {
   return compact.startsWith(letter) && /^\d/.test(compact.slice(1));
 }
 
+/** A model whose recalls may be merged into the user's total: only the numbered version of a "-Class" car. */
+function isNumberedClassModel(name: string, mergeKeys: Set<string>): boolean {
+  const key = modelKey(name);
+  if (mergeKeys.has(key)) return true;
+  return key.startsWith("amg") && mergeKeys.has(key.slice(3));
+}
+
 /**
  * Search the models listed under a family name (RX gives RX 350, RX 350L and so on). A "-Class"
  * family also tries the numbered models NHTSA really files it under (C300, C450, ...), which neither
- * list names. The number of outbound sub-model calls is capped, and recalls are merged by campaign.
+ * list names. Only the numbered "-Class" models are the same car sold under a number, so only their
+ * recalls are merged. A plain prefix relative such as Corolla Cross or F-150 Lightning is a different
+ * vehicle: its recalls are never added to the user's total, only named separately. The number of
+ * outbound sub-model calls is capped, and merged recalls are deduped by campaign.
  */
 async function searchRelatedModels(
   make: string,
   family: string,
   year: number,
   fetchFn: FetchFn
-): Promise<{ related: string[]; searched: string[]; filedUnder: string[]; recalls: Recall[] }> {
+): Promise<{ related: string[]; searched: string[]; filedUnder: string[]; relatedRecalls: RelatedModelRecall[]; recalls: Recall[] }> {
   const key = modelKey(family);
   // The products list names the versions NHTSA files recalls under. vPIC adds any family name it
   // lists separately, so the hint reflects every related model either list knows.
@@ -569,27 +629,36 @@ async function searchRelatedModels(
       recalls: toRecalls((await fetchRecalls(make, model, year, fetchFn)).raw, make, model, year),
     }))
   );
+  const mergeKeys = new Set(synthesized.map(modelKey));
   const recalls: Recall[] = [];
   const seen = new Set<string>();
   const filedUnder: string[] = [];
+  const relatedRecalls: RelatedModelRecall[] = [];
   let failures = 0;
   for (const result of settled) {
     if (result.status === "rejected") {
       failures++;
       continue;
     }
-    if (result.value.recalls.length > 0) filedUnder.push(result.value.model);
-    for (const recall of result.value.recalls) {
-      if (seen.has(recall.id)) continue;
-      seen.add(recall.id);
-      recalls.push(recall);
+    const found = result.value.recalls;
+    if (found.length === 0) continue;
+    if (isNumberedClassModel(result.value.model, mergeKeys)) {
+      filedUnder.push(result.value.model);
+      for (const recall of found) {
+        if (seen.has(recall.id)) continue;
+        seen.add(recall.id);
+        recalls.push(recall);
+      }
+    } else {
+      // A different car that shares the name: named separately, never merged into the user's total.
+      relatedRecalls.push({ model: result.value.model, count: found.length });
     }
   }
   // A failed sub-model check must not become a no-recalls answer for the whole family.
   if (failures > 0 && recalls.length === 0) {
     throw new SourceError(`${VEHICLE_SERVICE}: a related model check failed`);
   }
-  return { related: relatedModels, searched, filedUnder, recalls: recalls.sort(byRecency) };
+  return { related: relatedModels, searched, filedUnder, relatedRecalls, recalls: recalls.sort(byRecency) };
 }
 
 export async function searchVehicle(
@@ -628,6 +697,7 @@ export async function searchVehicle(
       relatedModels: found?.relatedModels ?? [],
       searchedModels: found?.searchedModels ?? [],
       filedUnder: found?.filedUnder ?? [],
+      relatedRecalls: found?.relatedRecalls ?? [],
       example: found?.example,
     });
     return result;
@@ -639,6 +709,7 @@ export async function searchVehicle(
     relatedModels: related.related,
     searchedModels: related.searched,
     filedUnder: related.filedUnder,
+    relatedRecalls: related.relatedRecalls,
     example: hintExample(related.related, related.searched, match),
   };
   const result: SearchResult = related.recalls.length > 0

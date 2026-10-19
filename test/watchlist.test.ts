@@ -777,6 +777,48 @@ test("the watch lead ranks a hazard that mentions death above a newer high sever
   assert.equal(check.recalls[1]?.id, "S-1");
 });
 
+test("a saved vehicle keeps the vPIC display casing on the watch list (2021 Lexus RX)", async () => {
+  const env = watchEnv();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify({ Results: [{ Model_Name: "RX" }] }), { status: 200 });
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const added = await addWatchItem(env, "user", { year: 2021, make: "lexus", model: "rx" });
+    assert.ok(added.ok);
+    assert.equal(added.item.label, "2021 Lexus RX");
+    assert.equal(added.item.model, "rx");
+    assert.equal((await readWatchList(env, "user"))[0]?.label, "2021 Lexus RX");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("the watch check never reports a related model's recall as the saved car's recall", async () => {
+  const env = watchEnv();
+  await addWatchItem(env, "user", { year: 2021, make: "toyota", model: "corolla" }, async () => ({ status: "known", model: "Corolla" }));
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify({ Results: [{ Model_Name: "Corolla" }, { Model_Name: "Corolla Cross" }] }), { status: 200 });
+    if (url.includes("/products/vehicle/models")) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    if (/model=Corolla\+Cross/.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [{ NHTSACampaignNumber: "CROSS-1", ReportReceivedDate: "01/02/2021", Component: "BRAKES", Consequence: "The part may fail.", Remedy: "Dealers will replace it." }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const check = await checkWatchList(env, "user");
+    assert.equal(check.newItems, 0, "the Corolla Cross recall is not the Corolla's");
+    assert.deepEqual(check.recalls, []);
+    assert.match(check.text, /NHTSA lists no recalls filed under the name 2021 Toyota Corolla\./, check.text);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("itemSearch breaks a same-date tie by severity, a death mention first", async () => {
   const death = makeRecall({ id: "D-1", source: "fda-food", date: "2024-01-01", hazard: "The product can cause death." });
   const high = makeRecall({ id: "H-1", source: "fda-food", date: "2024-01-01", severity: "high", hazard: "May cause serious injury." });

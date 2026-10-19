@@ -644,3 +644,97 @@ test("a model the speaker or NHTSA writes in capitals keeps them (2021 Lexus RX)
   const lower = await searchVehicle("lexus", "rx", 2021, ok(body));
   assert.equal(lower.query, "2021 Lexus RX", "the capitals NHTSA uses are kept");
 });
+
+test("an agency model with more tokens than spoken keeps its full spelling (RX 350)", async () => {
+  const body = {
+    Count: 1,
+    results: [
+      {
+        NHTSACampaignNumber: "99V000001",
+        ReportReceivedDate: "01/02/2021",
+        Model: "RX 350",
+        Component: "BRAKES",
+        Consequence: "The brakes may fail.",
+        Remedy: "Dealers will replace them.",
+      },
+    ],
+  };
+  const result = await searchVehicle("lexus", "rx350", 2021, ok(body));
+  assert.equal(result.query, "2021 Lexus RX 350", "the extra agency token 350 is kept");
+  assert.equal(result.recalls[0]?.title, "Brakes (2021 Lexus RX 350)");
+});
+
+test("the ambiguous question lists the vPIC choices in natural order (Model 10 after Model 3)", async () => {
+  const fetchFn = routedFetch([
+    ["vpic.nhtsa.dot.gov", vpic({ Results: [{ Model_Name: "Model 2" }, { Model_Name: "Model 10" }, { Model_Name: "Model S" }, { Model_Name: "Model 3" }] })],
+    ["api.nhtsa.gov", nhtsa(400)],
+  ]);
+  await assert.rejects(
+    () => searchVehicle("tesla", "model", 2021, fetchFn),
+    (error: unknown) => {
+      assert.ok(isAmbiguousVehicleError(error));
+      assert.equal(error.message, "Which one, Model 2, Model 3, Model 10 or Model S?");
+      assert.equal(error.truncated, false);
+      return true;
+    }
+  );
+});
+
+test("more prefix models than the cap end the question with or another model, never a cut list as complete", async () => {
+  const fetchFn = routedFetch([
+    ["vpic.nhtsa.dot.gov", vpic({ Results: ["One", "Two", "Three", "Four", "Five", "Six", "Seven"].map((n) => ({ Model_Name: `Sport ${n}` })) })],
+    ["api.nhtsa.gov", nhtsa(400)],
+  ]);
+  await assert.rejects(
+    () => searchVehicle("generic", "sport", 2021, fetchFn),
+    (error: unknown) => {
+      assert.ok(isAmbiguousVehicleError(error));
+      assert.equal(error.truncated, true);
+      assert.equal(error.options.length, 5, "the question names at most the cap of five");
+      assert.match(error.message, / or another model\?$/, error.message);
+      return true;
+    }
+  );
+});
+
+test("a related but different model's recall is never counted as the user's car", async () => {
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Corolla" }, { Model_Name: "Corolla Cross" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    if (/model=Corolla\+Cross/.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [recallRecord("COROLLA-CROSS-1", "BRAKES")] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+  const result = await searchVehicle("toyota", "corolla", 2021, fetchFn);
+  assert.equal(result.total, 0, "the Corolla Cross recall is not the Corolla's");
+  assert.deepEqual(result.recalls, []);
+  const out = speak(result);
+  assert.match(out, /NHTSA lists no recalls filed under the name 2021 Toyota Corolla\./, out);
+  assert.match(out, /A related model, the Corolla Cross, has 1 recall, so check which model is on the registration\./, out);
+});
+
+test("an F-150 Lightning recall is not reported as the F-150's", async () => {
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "F-150" }, { Model_Name: "F-150 Lightning" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    if (/model=F-150\+Lightning/.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [recallRecord("LIGHTNING-1", "ELECTRICAL SYSTEM")] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+  const result = await searchVehicle("ford", "f-150", 2022, fetchFn);
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.recalls, []);
+  assert.match(speak(result), /A related model, the F-150 Lightning, has 1 recall/, speak(result));
+});

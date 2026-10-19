@@ -182,9 +182,28 @@ export function followUps(recalls: Recall[]): string[] {
   });
 }
 
+/**
+ * When a different car shares the name and has recalls ("Corolla" vs "Corolla Cross"), name it apart from
+ * the user's car: the user's total stays 0, and the answer says which model the recall really belongs to.
+ */
+function relatedRecallNote(related: Array<{ model: string; count: number }>): string {
+  if (related.length === 0) return "";
+  if (related.length === 1) {
+    const only = related[0]!;
+    return `A related model, the ${only.model}, has ${count(only.count, "recall")}, so check which model is on the registration.`;
+  }
+  const named = related.map((entry) => `the ${entry.model} with ${count(entry.count, "recall")}`).join(", and ");
+  return `Related models, including ${named}, have recalls, so check which model is on the registration.`;
+}
+
 /** A family name with no recalls says what was searched, and only hints at sub-models when the make has several. */
 function vehicleNoRecallAnswer(result: SearchResult): string {
   const note = vehicleSearchNote(result);
+  const related = note?.relatedRecalls ?? [];
+  // A recall filed under a different car is never spoken as the user's car: total stays 0 and it is named apart.
+  if (related.length > 0) {
+    return `NHTSA lists no recalls filed under the name ${spokenQuery(result.query)}. That does not prove the car is safe. ${relatedRecallNote(related)}`;
+  }
   const searched = note?.searchedModels ?? [];
   const checked = searched.length > 0 ? `, after checking ${labelList(searched)}` : "";
   // The example names a model that was NOT already searched and is not a body variant like PHEV.

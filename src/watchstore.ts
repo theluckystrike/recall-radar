@@ -1,6 +1,7 @@
 import { cleanItem, stripAccents } from "./query.js";
 import { byImportance } from "./rank.js";
 import { normalizeMake, normalizeModel, route } from "./router.js";
+import { displayVehicleModel } from "./sources/nhtsa.js";
 import { followUps, speakWatch } from "./speech.js";
 import type { Recall } from "./types.js";
 
@@ -95,7 +96,11 @@ export function classifyWatchItem(input: WatchInput): WatchDraft {
     const year = input.year as number;
     const fixedMake = normalizeMake(make);
     const fixedModel = normalizeModel(model);
-    const label = `${year} ${titleCase(fixedMake)} ${titleCase(fixedModel)}`;
+    // A spoken alias expands ("silverado" -> "silverado 1500"); otherwise keep the given spelling, so a
+    // canonical vPIC name (RX, C300, CX-5) reaches displayVehicleModel with its capitals intact.
+    const lowered = model.trim().toLowerCase().replace(/\s+/g, " ");
+    const shownModel = fixedModel === lowered ? model : fixedModel;
+    const label = `${year} ${titleCase(fixedMake)} ${displayVehicleModel(shownModel)}`;
     return { kind: "vehicle", label, query: label, year, make: fixedMake, model: fixedModel };
   }
   const text = stripAccents((input.item ?? input.query ?? "").trim()).replace(/\s+/g, " ").slice(0, 80);
@@ -105,7 +110,7 @@ export function classifyWatchItem(input: WatchInput): WatchDraft {
   const routed = route(text);
   if (routed?.tool === "check_vehicle_recalls") {
     const { year, make: routedMake, model: routedModel } = routed.args;
-    const label = `${year} ${titleCase(routedMake)} ${titleCase(routedModel)}`;
+    const label = `${year} ${titleCase(routedMake)} ${displayVehicleModel(routedModel)}`;
     return { kind: "vehicle", label, query: label, year, make: routedMake, model: routedModel };
   }
   if (routed?.tool === "ask_vehicle") throw new TypeError("That looks like a vehicle. Give the year, make and model so it can be checked.");
