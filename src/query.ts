@@ -11,13 +11,32 @@ export function stripAccents(text: string): string {
   return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+/**
+ * Spoken phrases the sources spell differently. The server applies these itself, not only the router,
+ * so a client that sends "baby formula" straight to a search tool still searches "infant formula".
+ * A single word synonym is never applied here: "byheart formula" must keep the brand.
+ */
+const PHRASE_SYNONYMS: Array<[string, string]> = [["baby formula", "infant formula"]];
+
+const REFUSAL = "I need an item in English letters, for example ibuprofen.";
+
 export function cleanItem(query: string): string {
-  const words = stripAccents(query).toLowerCase()
-    .replace(/[^a-z0-9'&\- ]+/g, " ").split(/\s+/).filter(Boolean);
+  const plain = stripAccents(query).toLowerCase();
+  // A query with no letters, only non-Latin letters, or a mix of Latin and another script is refused
+  // before any source is called, so it never reaches a database and never becomes a no-recalls answer.
+  const letters = plain.match(/\p{L}/gu) ?? [];
+  const isLatin = (letter: string) => /\p{Script=Latin}/u.test(letter);
+  const hasLatin = letters.some(isLatin);
+  const hasOther = letters.some((letter) => !isLatin(letter));
+  if (!hasLatin || hasOther) throw new RangeError(REFUSAL);
+  const words = plain.replace(/[^a-z0-9'&\- ]+/g, " ").split(/\s+/).filter(Boolean);
   const kept = words.filter((w) => !WORRY.has(w));
-  const cleaned = (kept.length ? kept : words).join(" ").slice(0, 60);
+  let cleaned = (kept.length ? kept : words).join(" ").slice(0, 60);
+  for (const [phrase, target] of PHRASE_SYNONYMS) {
+    cleaned = cleaned.replace(new RegExp(`\\b${phrase}\\b`, "g"), target);
+  }
   // Nothing readable is left (for example a query in a non-Latin script). Never search the whole database.
-  if (!cleaned) throw new RangeError("I need an item in English letters, for example ibuprofen.");
+  if (!cleaned) throw new RangeError(REFUSAL);
   return cleaned;
 }
 

@@ -3,7 +3,13 @@ import * as z from "zod/v4";
 
 import { searchProducts } from "./sources/cpsc.js";
 import { searchDrug, searchFood } from "./sources/fda.js";
-import { searchVehicle } from "./sources/nhtsa.js";
+import {
+  isUnknownVehicleError,
+  isVehicleServiceError,
+  searchVehicle,
+  UNKNOWN_VEHICLE_MESSAGE,
+} from "./sources/nhtsa.js";
+import { byRecency } from "./rank.js";
 import { followUps, speak, speakMany } from "./speech.js";
 import { CARD_MIME, CARD_NAME, CARD_URI, cardDocument } from "./card.js";
 import { cleanItem, singularPhrase } from "./query.js";
@@ -66,7 +72,8 @@ function sorry(err: unknown) {
   let text = "Sorry, something went wrong while checking recalls. Please try again.";
   if (err instanceof RangeError) text = `Sorry, ${message}`;
   else if (err instanceof SourceError && /could not be fully checked/.test(message)) text = message;
-  else if (err instanceof SourceError && /NHTSA request returned HTTP 400|nhtsa: HTTP 400/i.test(message)) text = "I could not find that make and model in the NHTSA database. Please say the make and model the way they appear on the car, for example Ford F-150.";
+  else if (isUnknownVehicleError(err)) text = "I could not find that make and model in the NHTSA database. Please say the make and model the way they appear on the car, for example Ford F-150.";
+  else if (isVehicleServiceError(err)) text = "The NHTSA vehicle service is unavailable right now, so I could not check that car. Please try again in a minute.";
   else if (err instanceof SourceError && /timeout|abort/i.test(message)) text = "The government recall service did not answer in time. Please try again in a minute.";
   else if (err instanceof SourceError) text = "The government recall service could not be reached. Please try again in a minute.";
   return { content: [{ type: "text" as const, text }], isError: true };
@@ -85,11 +92,10 @@ async function vehicleWithRetry(make: string, model: string, year: number): Prom
     try {
       return await searchVehicle(fixedMake, words.slice(0, n).join(" "), year);
     } catch (err) {
-      const notFound = err instanceof SourceError && /HTTP 400/.test(err.message);
-      if (!notFound || n === Math.max(1, words.length - 2)) throw err;
+      if (!isUnknownVehicleError(err) || n === Math.max(1, words.length - 2)) throw err;
     }
   }
-  throw new SourceError("NHTSA request returned HTTP 400");
+  throw new SourceError(UNKNOWN_VEHICLE_MESSAGE);
 }
 
 /**
@@ -99,7 +105,10 @@ async function vehicleWithRetry(make: string, model: string, year: number): Prom
 export async function itemSearch(search: (q: string) => Promise<SearchResult>, raw: string): Promise<SearchResult> {
   const q = cleanItem(raw);
   const single = singularPhrase(q);
-  if (!single) return search(q);
+  if (!single) {
+    const only = await search(q);
+    return { ...only, recalls: [...only.recalls].sort(byRecency) };
+  }
   const [a, b] = await Promise.allSettled([search(q), search(single)]);
   const ok = [a, b].flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
   if (ok.length === 0) throw (a as PromiseRejectedResult).reason;
@@ -111,7 +120,7 @@ export async function itemSearch(search: (q: string) => Promise<SearchResult>, r
     throw new SourceError(`The ${SOURCE_NAMES[source]} could not be fully checked because one of its two searches failed. Please try again in a minute.`);
   }
   const seen = new Set<string>();
-  const recalls = ok.flatMap((r) => r.recalls).filter((r) => !seen.has(r.id) && seen.add(r.id)).sort((x, y) => y.date.localeCompare(x.date)).slice(0, 5);
+  const recalls = ok.flatMap((r) => r.recalls).filter((r) => !seen.has(r.id) && seen.add(r.id)).sort(byRecency).slice(0, 5);
   const best = ok.reduce((m, r) => (r.total > m.total ? r : m));
   return { ...best, query: q, total, recalls };
 }
@@ -157,7 +166,7 @@ export async function searchWatchItem(item: WatchItem, sources: RecallSources = 
   const seen = new Set<string>();
   const recalls = results.flatMap((result) => result.recalls)
     .filter((recall) => !seen.has(recall.id) && seen.add(recall.id))
-    .sort((a, b) => b.date.localeCompare(a.date));
+    .sort(byRecency);
   return { recalls, failed };
 }
 
@@ -225,13 +234,17 @@ export async function readWatchList(env: WatchEnv | undefined, userId?: string |
 export type WatchVehicleVerification = "known" | "unknown" | "unverified";
 export type WatchVehicleVerifier = (make: string, model: string, year: number) => Promise<WatchVehicleVerification>;
 
-/** One NHTSA check when a vehicle is added. HTTP 400 means NHTSA does not know the make and model for that year. */
+/**
+ * One NHTSA check when a vehicle is added. A resolved search means the model is known, even when it has no
+ * recalls. Only a model vPIC does not list is unknown. A vPIC failure is unverified, never unknown.
+ */
 export async function verifyWatchVehicle(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<WatchVehicleVerification> {
   try {
     await searchVehicle(make, model, year, fetchFn);
     return "known";
   } catch (err) {
-    return err instanceof SourceError && /HTTP 400/.test(err.message) ? "unknown" : "unverified";
+    if (isUnknownVehicleError(err)) return "unknown";
+    return "unverified";
   }
 }
 
@@ -406,7 +419,7 @@ function registerAll(server: McpServer) {
     const settled = await Promise.allSettled([SEARCH_SOURCES.product(q), SEARCH_SOURCES.food(q), SEARCH_SOURCES.drug(q)]);
     const results = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
     // One merged, newest-first list: the spoken answer reads the first, "more" reads the next four.
-    const merged = results.flatMap((r) => r.recalls).sort((a, b) => b.date.localeCompare(a.date));
+    const merged = results.flatMap((r) => r.recalls).sort(byRecency);
     const failed = sources.filter((_, i) => settled[i]?.status === "rejected");
     if (results.length === 0) return sorry(new SourceError("all sources failed"));
     return { content: [{ type: "text" as const, text: speakMany(results, [...failed]) }], structuredContent: { results, failed: [...failed], recall: merged[0], followUps: followUps(merged) } };

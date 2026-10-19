@@ -1,4 +1,5 @@
 import { cleanItem, stripAccents } from "./query.js";
+import { byImportance } from "./rank.js";
 import { normalizeMake, normalizeModel, route } from "./router.js";
 import { followUps, speakWatch } from "./speech.js";
 import type { Recall } from "./types.js";
@@ -142,11 +143,6 @@ function wholeWordMatch(item: WatchItem, needle: string): boolean {
   return wanted.every((word) => have.has(word));
 }
 
-function importance(a: Recall, b: Recall): number {
-  const rank = (recall: Recall) => (recall.severity === "high" ? 2 : recall.severity === "medium" ? 1 : 0);
-  return rank(b) - rank(a) || b.date.localeCompare(a.date);
-}
-
 /**
  * The watch list as a plain object over WatchStorage. The Durable Object in watchdo.ts is a thin RPC layer over
  * this class, so the same logic runs in production, in the in-memory fallback and in the unit tests.
@@ -250,7 +246,7 @@ export class WatchStore {
       return { ...item, seen };
     });
     await this.save(merged);
-    fresh.sort((a, b) => importance(a.recall, b.recall));
+    fresh.sort((a, b) => byImportance(a.recall, b.recall));
     const recalls = fresh.map((entry) => entry.recall);
     const newItems = new Set(fresh.map((entry) => entry.item.id)).size;
     const text = speakWatch({ totalItems: merged.length, newItems, failedItems, checkedItems, recall: recalls[0], newRecallCount: recalls.length, query: fresh[0]?.item.query, label: fresh[0]?.item.label, firstCheck, emptyLabels });

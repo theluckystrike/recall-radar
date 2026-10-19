@@ -3,14 +3,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { searchVehicle } from "../src/sources/nhtsa";
+import {
+  isUnknownVehicleError,
+  isVehicleServiceError,
+  searchVehicle,
+} from "../src/sources/nhtsa";
 import { SourceError } from "../src/types";
 
-const fixtureUrl = new URL(
-  "./fixtures/nhtsa-honda-accord-2018.json",
-  import.meta.url
-);
-const fixture = JSON.parse(readFileSync(fileURLToPath(fixtureUrl), "utf8"));
+const loadFixture = (name: string): unknown =>
+  JSON.parse(readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)), "utf8"));
+
+const fixture = loadFixture("nhtsa-honda-accord-2018.json");
+const camryVpic = loadFixture("vpic-toyota-camry-2026.json");
+const f150Vpic = loadFixture("vpic-ford-f150-2021.json");
+const hondaVpic = loadFixture("vpic-honda-2026.json");
 
 type FetchFn = typeof fetch;
 
@@ -25,6 +31,20 @@ function ok(body: unknown): FetchFn {
 function httpError(status: number): FetchFn {
   return async () => new Response("{}", { status });
 }
+
+/** Routes NHTSA and vPIC calls to their own answers, so the fallback path can be tested exactly. */
+function routedFetch(routes: Array<[string, () => Response]>): FetchFn {
+  return async (input) => {
+    const url = String(input);
+    for (const [needle, answer] of routes) if (url.includes(needle)) return answer();
+    return new Response("{}", { status: 404 });
+  };
+}
+
+const vpic = (body: unknown, status = 200) => () =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const nhtsa = (status: number, body: unknown = {}) => () =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 function nonJson(): FetchFn {
   return async () =>
@@ -74,17 +94,18 @@ test("maps a real NHTSA response newest first, capped at 5", async () => {
 });
 
 test("constructs the endpoint URL with encoded params", async () => {
-  let capturedUrl = "";
+  const urls: string[] = [];
   const capture: FetchFn = async (input) => {
-    capturedUrl = String(input);
-    return new Response(JSON.stringify({ Count: 0, results: [] }), {
-      status: 200,
-    });
+    urls.push(String(input));
+    if (String(input).includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "C-Class" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
   };
 
   await searchVehicle("mercedes benz", "c-class", 2020, capture);
   assert.equal(
-    capturedUrl,
+    urls[0],
     "https://api.nhtsa.gov/recalls/recallsByVehicle?make=mercedes+benz&model=c-class&modelYear=2020"
   );
 });
@@ -92,9 +113,12 @@ test("constructs the endpoint URL with encoded params", async () => {
 test("passes an AbortSignal timeout and JSON accept header to fetch", async () => {
   let capturedSignal: unknown = null;
   let capturedHeaders: unknown;
-  const capture: FetchFn = async (_input, init) => {
+  const capture: FetchFn = async (input, init) => {
     capturedSignal = init?.signal ?? null;
     capturedHeaders = init?.headers;
+    if (String(input).includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Accord" }] }), { status: 200 });
+    }
     return new Response(JSON.stringify({ Count: 0, results: [] }), {
       status: 200,
     });
@@ -146,15 +170,19 @@ test("throws SourceError on non-JSON body", async () => {
   );
 });
 
-test("returns total 0 and empty recalls when no results", async () => {
+test("returns total 0 and empty recalls when no results and vPIC lists the model", async () => {
   const result = await searchVehicle(
     "honda",
     "accord",
     2018,
-    ok({ Count: 0, results: [] })
+    routedFetch([
+      ["vpic.nhtsa.dot.gov", vpic({ Results: [{ Model_Name: "Accord" }] })],
+      ["api.nhtsa.gov", nhtsa(200, { Count: 0, results: [] })],
+    ])
   );
   assert.equal(result.total, 0);
   assert.deepEqual(result.recalls, []);
+  assert.equal(result.query, "2018 Honda Accord");
 });
 
 test("falls back to Summary when Consequence is missing", async () => {
@@ -244,4 +272,121 @@ test("skips records missing a campaign number or a parseable date", async () => 
   const result = await searchVehicle("honda", "accord", 2018, ok(body));
   assert.equal(result.recalls.length, 1);
   assert.equal(result.recalls[0]?.id, "99V000002");
+});
+
+test("same-date search results break a tie by severity, and a death mention ranks above other high severity", async () => {
+  const body = {
+    Count: 3,
+    results: [
+      { NHTSACampaignNumber: "A", ReportReceivedDate: "01/02/2020", Component: "BRAKES", Consequence: "Parts may fail." },
+      { NHTSACampaignNumber: "B", ReportReceivedDate: "01/02/2020", Component: "ENGINE", Consequence: "The defect can cause death." },
+      { NHTSACampaignNumber: "C", ReportReceivedDate: "01/02/2020", Component: "SEATS", Consequence: "The seat may break.", parkIt: true },
+    ],
+  };
+  const result = await searchVehicle("honda", "accord", 2018, ok(body));
+  assert.deepEqual(result.recalls.map((r) => r.id), ["B", "C", "A"]);
+});
+
+test("a 400 for a real model with no recalls is confirmed by vPIC as no recalls listed", async () => {
+  const result = await searchVehicle(
+    "toyota",
+    "camry",
+    2026,
+    routedFetch([
+      ["vpic.nhtsa.dot.gov", vpic(camryVpic)],
+      ["api.nhtsa.gov", nhtsa(400)],
+    ])
+  );
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.recalls, []);
+  assert.equal(result.query, "2026 Toyota Camry");
+});
+
+test("an empty NHTSA answer for a real model is confirmed by vPIC", async () => {
+  const result = await searchVehicle(
+    "toyota",
+    "camry",
+    2026,
+    routedFetch([
+      ["vpic.nhtsa.dot.gov", vpic(camryVpic)],
+      ["api.nhtsa.gov", nhtsa(200, { Count: 0, results: [] })],
+    ])
+  );
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.recalls, []);
+});
+
+test("a model vPIC does not list is refused as unknown", async () => {
+  await assert.rejects(
+    () =>
+      searchVehicle(
+        "honda",
+        "nope",
+        2026,
+        routedFetch([
+          ["vpic.nhtsa.dot.gov", vpic(hondaVpic)],
+          ["api.nhtsa.gov", nhtsa(400)],
+        ])
+      ),
+    (error: unknown) => isUnknownVehicleError(error)
+  );
+});
+
+test("a vPIC failure says the vehicle service is unavailable, never unknown and never no recalls", async () => {
+  await assert.rejects(
+    () =>
+      searchVehicle(
+        "toyota",
+        "camry",
+        2026,
+        routedFetch([
+          ["vpic.nhtsa.dot.gov", nhtsa(500)],
+          ["api.nhtsa.gov", nhtsa(400)],
+        ])
+      ),
+    (error: unknown) => {
+      assert.ok(isVehicleServiceError(error), "a service error is reported");
+      assert.ok(!isUnknownVehicleError(error), "a vPIC failure is never called unknown");
+      return true;
+    }
+  );
+  await assert.rejects(
+    () =>
+      searchVehicle(
+        "toyota",
+        "camry",
+        2026,
+        routedFetch([
+          ["vpic.nhtsa.dot.gov", () => { throw new TypeError("network down"); }],
+          ["api.nhtsa.gov", nhtsa(400)],
+        ])
+      ),
+    (error: unknown) => isVehicleServiceError(error)
+  );
+});
+
+test("F150 matches F-150 in vPIC, so the spoken form is accepted", async () => {
+  const result = await searchVehicle(
+    "ford",
+    "F150",
+    2021,
+    routedFetch([
+      ["vpic.nhtsa.dot.gov", vpic(f150Vpic)],
+      ["api.nhtsa.gov", nhtsa(400)],
+    ])
+  );
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.recalls, []);
+});
+
+test("a real recall answer never calls vPIC", async () => {
+  const urls: string[] = [];
+  const fetchFn: FetchFn = async (input) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify(fixture), { status: 200 });
+  };
+  const result = await searchVehicle("honda", "accord", 2018, fetchFn);
+  assert.equal(result.recalls.length, 5);
+  assert.equal(urls.length, 1);
+  assert.ok(urls[0]!.includes("api.nhtsa.gov"));
 });

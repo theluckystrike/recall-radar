@@ -17,6 +17,28 @@ test("cleanItem strips accents and refuses text with no Latin letters", () => {
   assert.throws(() => cleanItem("ибупрофен"), /English letters/);
 });
 
+test("cleanItem searches baby formula as infant formula and keeps a brand", () => {
+  assert.equal(cleanItem("baby formula"), "infant formula");
+  assert.equal(cleanItem("similac baby formula"), "similac infant formula");
+  assert.equal(cleanItem("byheart formula"), "byheart formula");
+});
+
+test("cleanItem refuses a query with no letters or Latin mixed with another script", () => {
+  for (const query of ["12345", "@#%", "日本", "ибупрофен", "ibuprofen 日本", "Ибупрофен ibuprofen"]) {
+    assert.throws(() => cleanItem(query), /English letters/, query);
+  }
+});
+
+test("the server search path applies the baby formula synonym", async () => {
+  const queries: string[] = [];
+  const search = async (q: string) => {
+    queries.push(q);
+    return { query: q, source: "fda-food" as const, total: 0, recalls: [] };
+  };
+  await itemSearch(search, "baby formula");
+  assert.deepEqual(queries, ["infant formula"]);
+});
+
 test("a query with no readable item is refused and never searches everything", async () => {
   let calls = 0;
   const search = async () => {

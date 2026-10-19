@@ -1,0 +1,10 @@
+{
+  "Count": 3,
+  "Message": "Response returned successfully",
+  "SearchCriteria": "Make:toyota | ModelYear:2026",
+  "Results": [
+    { "Make_ID": 448, "Make_Name": "TOYOTA", "Model_ID": 2205, "Model_Name": "Camry" },
+    { "Make_ID": 448, "Make_Name": "TOYOTA", "Model_ID": 2211, "Model_Name": "Camry Hybrid" },
+    { "Make_ID": 448, "Make_Name": "TOYOTA", "Model_ID": 2460, "Model_Name": "Corolla" }
+  ]
+}

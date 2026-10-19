@@ -135,9 +135,9 @@ test("a watch item with accents searches the unaccented words", async () => {
   assert.equal(removed.removed, true);
 });
 
-test("text with no Latin letters is refused with the validation message, never as an unreachable source", async () => {
+test("text with no letters, no Latin letters or Latin mixed with another script is refused, never as an unreachable source", async () => {
   const env = watchEnv();
-  for (const item of ["日本", "ибупрофен"]) {
+  for (const item of ["日本", "ибупрофен", "12345", "@#%", "ibuprofen 日本", "Ибупрофен ibuprofen"]) {
     const added = await addWatchItem(env, "user", { item });
     assert.equal(added.ok, false, item);
     if (!added.ok) {
@@ -187,11 +187,14 @@ test("a known vehicle is saved without a note and checked once", async () => {
   assert.equal(calls, 1);
 });
 
-test("the add check maps HTTP 400 to unknown and a network failure to unverified", async () => {
-  const http = (status: number) => (async () => new Response("{}", { status })) as typeof fetch;
-  assert.equal(await verifyWatchVehicle("honda", "accord", 2019, http(400)), "unknown");
-  const known = (async () => new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 })) as typeof fetch;
-  assert.equal(await verifyWatchVehicle("honda", "accord", 2019, known), "known");
+test("the add check maps an unlisted model to unknown, a listed no-recalls model to known and a vPIC failure to unverified", async () => {
+  const vpicThen = (body: unknown, status = 200) => (async (input: string | URL | Request) => {
+    if (String(input).includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify(body), { status });
+    return new Response("{}", { status: 400 });
+  }) as typeof fetch;
+  assert.equal(await verifyWatchVehicle("honda", "nope", 2019, vpicThen({ Results: [{ Model_Name: "Accord" }] })), "unknown");
+  assert.equal(await verifyWatchVehicle("honda", "accord", 2019, vpicThen({ Results: [{ Model_Name: "Accord" }] })), "known");
+  assert.equal(await verifyWatchVehicle("honda", "accord", 2019, vpicThen({}, 500)), "unverified");
   const down = (async () => {
     throw new TypeError("network down");
   }) as typeof fetch;
@@ -201,12 +204,56 @@ test("the add check maps HTTP 400 to unknown and a network failure to unverified
 test("the add tool refuses an unknown vehicle and saves nothing", async () => {
   const env = watchEnv();
   const original = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("{}", { status: 400 })) as typeof fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    if (String(input).includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify({ Results: [{ Model_Name: "Accord" }] }), { status: 200 });
+    return new Response("{}", { status: 400 });
+  }) as typeof fetch;
   try {
     const result = await toolHandler(createServer({ env, userId: "user" }), "add_to_watch_list")({ year: 2019, make: "honda", model: "nope" }, {});
     assert.equal(result.isError, true);
     assert.match(result.content?.[0]?.text ?? "", /does not list that make and model/);
     assert.equal((await readWatchList(env, "user")).length, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a real car with no recalls is accepted on the watch list", async () => {
+  const env = watchEnv();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    if (String(input).includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify({ Results: [{ Model_Name: "Camry" }] }), { status: 200 });
+    return new Response("{}", { status: 400 });
+  }) as typeof fetch;
+  try {
+    const added = await addWatchItem(env, "user", { year: 2026, make: "toyota", model: "camry" });
+    assert.ok(added.ok);
+    assert.equal(added.note, undefined);
+    assert.equal((await readWatchList(env, "user")).length, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a known model with no recalls answers no recalls, and a vPIC failure says the vehicle service is unavailable", async () => {
+  const original = globalThis.fetch;
+  const vpicThen = (body: unknown, status = 200) => (async (input: string | URL | Request) => {
+    if (String(input).includes("vpic.nhtsa.dot.gov")) return new Response(JSON.stringify(body), { status });
+    return new Response("{}", { status: 400 });
+  }) as typeof fetch;
+  try {
+    globalThis.fetch = vpicThen({ Results: [{ Model_Name: "Camry" }] });
+    const found = await toolHandler(createServer({}), "check_vehicle_recalls")({ year: 2026, make: "toyota", model: "camry" }, {});
+    assert.equal(found.isError, undefined);
+    assert.match(found.content?.[0]?.text ?? "", /no recalls/);
+
+    globalThis.fetch = vpicThen({}, 500);
+    const down = await toolHandler(createServer({}), "check_vehicle_recalls")({ year: 2026, make: "toyota", model: "camry" }, {});
+    assert.equal(down.isError, true);
+    const text = down.content?.[0]?.text ?? "";
+    assert.match(text, /vehicle service is unavailable/);
+    assert.ok(!/no recalls/i.test(text), text);
+    assert.ok(!/not find that make/i.test(text), text);
   } finally {
     globalThis.fetch = original;
   }
@@ -599,13 +646,13 @@ test("vehicle aliases work in watch classification and over the MCP vehicle tool
   const urls: string[] = [];
   globalThis.fetch = (async (url: string | URL | Request) => {
     urls.push(String(url));
+    if (String(url).includes("vpic.nhtsa.dot.gov")) return jsonResponse(200, { Results: [{ Model_Name: "Silverado 1500" }] });
     return jsonResponse(200, { Count: 0, results: [] });
   }) as typeof fetch;
   try {
     const server = createServer({});
     const result = await toolHandler(server, "check_vehicle_recalls")({ year: 2019, make: "Chevy", model: "Silverado" }, {});
     assert.equal(result.isError, undefined);
-    assert.equal(urls.length, 1);
     assert.match(urls[0]!, /make=chevrolet/);
     assert.match(urls[0]!, /model=silverado\+1500/);
   } finally {
@@ -623,4 +670,25 @@ test("check says no recalls found when sources answer zero and could not check o
   const unavailable = await checkWatchList(env, "user", async () => ({ recalls: [], failed: true }));
   assert.match(unavailable.text, /could not check/);
   assert.ok(!unavailable.text.includes("No recalls found"), unavailable.text);
+});
+
+test("the watch lead ranks a hazard that mentions death above a newer high severity recall", async () => {
+  const env = watchEnv();
+  await addWatchItem(env, "user", { item: "crib" });
+  await addWatchItem(env, "user", { item: "stroller" });
+  const fatal = makeRecall({ id: "C-1", title: "Crib", date: "2023-01-01", hazard: "The crib can cause death." });
+  const highNewer = makeRecall({ id: "S-1", title: "Stroller", date: "2025-06-01", severity: "high", hazard: "The stroller may tip over." });
+  const lookup = async (item: WatchItem) => ({ recalls: item.query === "crib" ? [fatal] : [highNewer], failed: false });
+  const check = await checkWatchList(env, "user", lookup);
+  assert.equal(check.recalls[0]?.id, "C-1");
+  assert.equal(check.recalls[1]?.id, "S-1");
+});
+
+test("itemSearch breaks a same-date tie by severity, a death mention first", async () => {
+  const death = makeRecall({ id: "D-1", source: "fda-food", date: "2024-01-01", hazard: "The product can cause death." });
+  const high = makeRecall({ id: "H-1", source: "fda-food", date: "2024-01-01", severity: "high", hazard: "May cause serious injury." });
+  const none = makeRecall({ id: "N-1", source: "fda-food", date: "2024-01-01", hazard: "A minor fault." });
+  const search = async (q: string) => hit(q, "fda-food", [none, high, death]);
+  const result = await itemSearch(search, "widget");
+  assert.deepEqual(result.recalls.map((r) => r.id), ["D-1", "H-1", "N-1"]);
 });

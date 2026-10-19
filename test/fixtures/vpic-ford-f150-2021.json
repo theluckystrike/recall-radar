@@ -1,0 +1,10 @@
+{
+  "Count": 3,
+  "Message": "Response returned successfully",
+  "SearchCriteria": "Make:ford | ModelYear:2021",
+  "Results": [
+    { "Make_ID": 460, "Make_Name": "FORD", "Model_ID": 1801, "Model_Name": "F-150" },
+    { "Make_ID": 460, "Make_Name": "FORD", "Model_ID": 1802, "Model_Name": "F-250" },
+    { "Make_ID": 460, "Make_Name": "FORD", "Model_ID": 1803, "Model_Name": "F-350" }
+  ]
+}

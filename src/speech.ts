@@ -1,4 +1,5 @@
 import type { Recall, SearchResult, Source } from "./types";
+import { byRecency } from "./rank.js";
 
 // Voice answers for Alexa+. One recall is read in full, then the count of the others.
 // Target: about 50 words, never more than 70. The structured result keeps every detail.
@@ -241,7 +242,7 @@ export function speakMany(results: SearchResult[], failed: Source[] = []): strin
 function speakManyCore(results: SearchResult[]): string {
   const query = spokenQuery(results.find((r) => r.query)?.query ?? "");
   const total = results.reduce((sum, r) => sum + r.total, 0);
-  const newest = results.flatMap((r) => r.recalls).sort((a, b) => b.date.localeCompare(a.date))[0];
+  const newest = results.flatMap((r) => r.recalls).sort(byRecency)[0];
   if (total <= 0 || !newest) {
     const subject = query ? ` for ${query}` : "";
     return spoken(`I found no recalls${subject} in the product, food or drug recall lists. That does not prove it is safe, only that nothing is listed.`);
