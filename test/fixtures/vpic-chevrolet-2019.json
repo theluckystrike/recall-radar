@@ -1,0 +1,9 @@
+{
+  "Count": 2,
+  "Message": "Response returned successfully",
+  "SearchCriteria": "Make:chevrolet | ModelYear:2019",
+  "Results": [
+    { "Make_ID": 468, "Make_Name": "CHEVROLET", "Model_ID": 1930, "Model_Name": "Silverado 1500" },
+    { "Make_ID": 468, "Make_Name": "CHEVROLET", "Model_ID": 1931, "Model_Name": "Equinox" }
+  ]
+}

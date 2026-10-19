@@ -17,6 +17,8 @@ const fixture = loadFixture("nhtsa-honda-accord-2018.json");
 const camryVpic = loadFixture("vpic-toyota-camry-2026.json");
 const f150Vpic = loadFixture("vpic-ford-f150-2021.json");
 const hondaVpic = loadFixture("vpic-honda-2026.json");
+const mazdaVpic = loadFixture("vpic-mazda-2019.json");
+const chevroletVpic = loadFixture("vpic-chevrolet-2019.json");
 
 type FetchFn = typeof fetch;
 
@@ -389,4 +391,72 @@ test("a real recall answer never calls vPIC", async () => {
   assert.equal(result.recalls.length, 5);
   assert.equal(urls.length, 1);
   assert.ok(urls[0]!.includes("api.nhtsa.gov"));
+});
+
+test("a make-prefixed vPIC name is accepted (Mazda3 for make mazda, model 3)", async () => {
+  const result = await searchVehicle(
+    "mazda",
+    "3",
+    2019,
+    routedFetch([
+      ["vpic.nhtsa.dot.gov", vpic(mazdaVpic)],
+      ["api.nhtsa.gov", nhtsa(400)],
+    ])
+  );
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.recalls, []);
+  assert.equal(result.query, "2019 Mazda 3");
+});
+
+test("a vPIC name that adds a trim still matches the wanted model", async () => {
+  const result = await searchVehicle(
+    "chevrolet",
+    "silverado",
+    2019,
+    routedFetch([
+      ["vpic.nhtsa.dot.gov", vpic(chevroletVpic)],
+      ["api.nhtsa.gov", nhtsa(400)],
+    ])
+  );
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.recalls, []);
+});
+
+test("a vPIC 200 without a Results array or with an Errors array is a service error, never unknown", async () => {
+  for (const body of [{}, { Errors: ["invalid make"] }]) {
+    await assert.rejects(
+      () =>
+        searchVehicle(
+          "toyota",
+          "camry",
+          2026,
+          routedFetch([
+            ["vpic.nhtsa.dot.gov", vpic(body)],
+            ["api.nhtsa.gov", nhtsa(400)],
+          ])
+        ),
+      (error: unknown) => {
+        assert.ok(isVehicleServiceError(error), `service error for ${JSON.stringify(body)}`);
+        assert.ok(!isUnknownVehicleError(error), "a 200 error body is never called unknown");
+        return true;
+      }
+    );
+  }
+});
+
+test("the vPIC model list is cached by make and year for six hours", async () => {
+  let vpicCalls = 0;
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      vpicCalls++;
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Camry" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+  const first = await searchVehicle("toyota", "camry", 2026, fetchFn);
+  const second = await searchVehicle("toyota", "camry", 2026, fetchFn);
+  assert.equal(first.total, 0);
+  assert.equal(second.total, 0);
+  assert.equal(vpicCalls, 1, "the second check uses the cached model list");
 });

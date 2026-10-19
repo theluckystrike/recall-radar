@@ -201,6 +201,17 @@ test("the add check maps an unlisted model to unknown, a listed no-recalls model
   assert.equal(await verifyWatchVehicle("honda", "accord", 2019, down), "unverified");
 });
 
+test("verifyWatchVehicle retries with the model name the way the check tool does", async () => {
+  const fetchFn = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "Civic Hybrid" }] }), { status: 200 });
+    }
+    return new Response("{}", { status: 400 });
+  }) as typeof fetch;
+  assert.equal(await verifyWatchVehicle("honda", "civic ex", 2019, fetchFn), "known");
+});
+
 test("the add tool refuses an unknown vehicle and saves nothing", async () => {
   const env = watchEnv();
   const original = globalThis.fetch;
@@ -414,6 +425,21 @@ test("the watch answer lead counts only the items the check reached", async () =
   const lead = check.text.slice(0, check.text.indexOf("I could not"));
   assert.ok(!lead.includes("1 of your 3 items"), check.text);
   assert.match(check.text, /could not fully check 1 of your 3 items/);
+});
+
+test("a partial failure that still found a recall counts as checked, so the lead stays plural", async () => {
+  const env = watchEnv();
+  await addWatchItem(env, "user", { item: "crib" });
+  await addWatchItem(env, "user", { item: "stroller" });
+  const crib = makeRecall({ id: "CRIB-1", title: "Crib", date: "2024-02-01" });
+  const stroller = makeRecall({ id: "STROLLER-1", title: "Stroller", date: "2024-02-01" });
+  const lookup = async (item: WatchItem) => item.query === "crib"
+    ? { recalls: [crib], failed: true }
+    : { recalls: [stroller], failed: false };
+  const check = await checkWatchList(env, "user", lookup);
+  assert.equal(check.newItems, 2);
+  assert.match(check.text, /2 of your 2 items have a new recall/);
+  assert.ok(!/Your item has a new recall/.test(check.text), check.text);
 });
 
 // ---- WatchStore: the plain class the Durable Object and the in-memory fallback both delegate to ----

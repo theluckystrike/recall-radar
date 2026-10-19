@@ -49,11 +49,50 @@ interface VpicModel {
 
 interface VpicResponse {
   Results?: unknown;
+  Errors?: unknown;
 }
 
 /** "F-150", "F150" and "F 150" all become "f150", so a spoken model matches the vPIC spelling. */
 function modelKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// The vPIC model list changes rarely, so a short in-process cache by make and year keeps a watch check
+// of several no-recall vehicles from doubling its outbound requests. Cached values expire after 6 hours.
+const VPIC_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+interface VpicCacheEntry {
+  names: string[];
+  expires: number;
+}
+
+const vpicCache = new WeakMap<FetchFn, Map<string, VpicCacheEntry>>();
+
+function vpicCacheFor(fetchFn: FetchFn): Map<string, VpicCacheEntry> {
+  let cache = vpicCache.get(fetchFn);
+  if (!cache) {
+    cache = new Map();
+    vpicCache.set(fetchFn, cache);
+  }
+  return cache;
+}
+
+/**
+ * A vPIC name matches the wanted model when its key is the wanted key, the make key followed by the
+ * wanted key ("Mazda3" for make mazda and model 3), or when one key is a prefix of the other so a
+ * name that adds or drops a trim ("Camry Hybrid", "Corolla Cross") still matches.
+ */
+function modelMatches(names: string[], make: string, model: string): boolean {
+  const wanted = modelKey(model);
+  if (!wanted) return false;
+  const makeKey = modelKey(make);
+  return names.some((name) => {
+    const key = modelKey(name);
+    if (!key) return false;
+    if (key === wanted) return true;
+    if (makeKey && key === `${makeKey}${wanted}`) return true;
+    return key.length >= 3 && wanted.length >= 3 && (key.startsWith(wanted) || wanted.startsWith(key));
+  });
 }
 
 function maxAllowedYear(): number {
@@ -183,6 +222,10 @@ async function requestVpicModels(
   year: number,
   fetchFn: FetchFn
 ): Promise<string[]> {
+  const cache = vpicCacheFor(fetchFn);
+  const cacheKey = `${make.trim().toLowerCase()}|${year}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.names;
   const url = `${VPIC_ENDPOINT}/${encodeURIComponent(make)}/modelyear/${year}?format=json`;
   let response: Response;
   try {
@@ -204,13 +247,21 @@ async function requestVpicModels(
   } catch {
     throw new SourceError(`${VEHICLE_SERVICE}: response was not valid JSON`);
   }
-  const results: unknown[] = Array.isArray(data.Results) ? data.Results : [];
-  return results
+  // A 200 with an error body or no Results array is a service failure, never "the model is not listed".
+  if (Array.isArray(data.Errors) && data.Errors.length > 0) {
+    throw new SourceError(`${VEHICLE_SERVICE}: vPIC reported an error`);
+  }
+  if (!Array.isArray(data.Results)) {
+    throw new SourceError(`${VEHICLE_SERVICE}: response had no model list`);
+  }
+  const names = (data.Results as unknown[])
     .filter((entry): entry is VpicModel => typeof entry === "object" && entry !== null)
     .map((entry) => entry.Model_Name)
     .filter((name): name is string => typeof name === "string")
     .map((name) => name.trim())
     .filter(Boolean);
+  cache.set(cacheKey, { names, expires: Date.now() + VPIC_CACHE_TTL_MS });
+  return names;
 }
 
 /**
@@ -225,8 +276,7 @@ async function confirmModel(
   fetchFn: FetchFn
 ): Promise<void> {
   const names = await requestVpicModels(make, year, fetchFn);
-  const wanted = modelKey(model);
-  if (wanted && names.some((name) => modelKey(name) === wanted)) return;
+  if (modelMatches(names, make, model)) return;
   throw new SourceError(`${UNKNOWN_VEHICLE}: ${make} ${model} ${year}`);
 }
 

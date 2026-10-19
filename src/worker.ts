@@ -1,6 +1,8 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 
 import { aiRoute, type AiEnv, type Pending } from "./airouter.js";
+import { REFUSAL } from "./query.js";
+import type { RouteResult } from "./router.js";
 import { NAME, VERSION, createServer, type WatchEnv } from "./server.js";
 import { WatchListDO } from "./watchdo.js";
 
@@ -45,7 +47,14 @@ async function handleRoute(request: Request, env: Env): Promise<Response> {
   } catch {
     return Response.json({ error: "Send JSON: {\"utterance\": \"...\"}" }, { status: 400 });
   }
-  const { route: call, by } = await aiRoute(env, utterance, pending);
+  let routed: { route: RouteResult | null; by: "model" | "rules" };
+  try {
+    routed = await aiRoute(env, utterance, pending);
+  } catch {
+    // The route endpoint always returns a controlled answer, never an uncaught error.
+    return Response.json({ tool: "refuse", args: { message: REFUSAL }, by: "rules" });
+  }
+  const { route: call, by } = routed;
   return call ? Response.json({ ...call, by }) : Response.json({ error: "I did not understand. Try: is my 2018 Honda Accord recalled?", by }, { status: 404 });
 }
 

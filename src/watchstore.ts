@@ -232,8 +232,9 @@ export class WatchStore {
     for (const { item, recalls, failed } of checked) {
       const now = currentById.get(item.id);
       if (!now) continue;
+      // A partial failure that still produced a recall was reached, so it counts as checked for the lead.
       if (failed) failedItems++;
-      else checkedItems++;
+      if (!failed || recalls.length > 0) checkedItems++;
       if (!failed && recalls.length === 0) emptyLabels.push(item.label);
       for (const recall of recalls) {
         if (!item.seen.includes(recall.id) && !now.seen.includes(recall.id)) fresh.push({ item, recall });

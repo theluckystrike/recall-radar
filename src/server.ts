@@ -84,19 +84,22 @@ function answer(result: SearchResult) {
 }
 
 /** "accord ex" or "range rover sport" can be unknown to NHTSA: retry with fewer model words, at most twice. */
-async function vehicleWithRetry(make: string, model: string, year: number): Promise<SearchResult> {
+async function searchVehicleWithRetry(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<SearchResult> {
   const fixedMake = normalizeMake(make);
   const fixedModel = normalizeModel(model);
   const words = fixedModel.trim().split(/\s+/);
-  for (let n = words.length; n >= Math.max(1, words.length - 2); n--) {
+  const floor = Math.max(1, words.length - 2);
+  for (let n = words.length; n >= floor; n--) {
     try {
-      return await searchVehicle(fixedMake, words.slice(0, n).join(" "), year);
+      return await searchVehicle(fixedMake, words.slice(0, n).join(" "), year, fetchFn);
     } catch (err) {
-      if (!isUnknownVehicleError(err) || n === Math.max(1, words.length - 2)) throw err;
+      if (!isUnknownVehicleError(err) || n === floor) throw err;
     }
   }
   throw new SourceError(UNKNOWN_VEHICLE_MESSAGE);
 }
+
+const vehicleWithRetry = (make: string, model: string, year: number) => searchVehicleWithRetry(make, model, year);
 
 /**
  * Clean the item words and search the plural and singular forms in parallel ("cantaloupes" and "cantaloupe"):
@@ -235,12 +238,13 @@ export type WatchVehicleVerification = "known" | "unknown" | "unverified";
 export type WatchVehicleVerifier = (make: string, model: string, year: number) => Promise<WatchVehicleVerification>;
 
 /**
- * One NHTSA check when a vehicle is added. A resolved search means the model is known, even when it has no
- * recalls. Only a model vPIC does not list is unknown. A vPIC failure is unverified, never unknown.
+ * One NHTSA check when a vehicle is added, with the same model-word retry the check tool uses, so a trim
+ * such as "accord ex" is not refused at add time. A resolved search means the model is known, even when it
+ * has no recalls. Only a model vPIC does not list is unknown. A vPIC failure is unverified, never unknown.
  */
 export async function verifyWatchVehicle(make: string, model: string, year: number, fetchFn?: typeof fetch): Promise<WatchVehicleVerification> {
   try {
-    await searchVehicle(make, model, year, fetchFn);
+    await searchVehicleWithRetry(make, model, year, fetchFn);
     return "known";
   } catch (err) {
     if (isUnknownVehicleError(err)) return "unknown";

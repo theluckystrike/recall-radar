@@ -96,6 +96,22 @@ test("a vehicle kind word next to a product word stays a product search", () => 
   assert.deepEqual(route("is my car seat recalled")?.args, { query: "car seat" });
 });
 
+test("an ambiguous vehicle noun alone stays a product search", () => {
+  for (const noun of ["wagon", "pickup", "convertible"]) {
+    const got = route(`is my ${noun} recalled`);
+    assert.ok(got, noun);
+    assert.equal(got.tool, "check_all_recalls", noun);
+    assert.deepEqual(got.args, { query: noun }, noun);
+  }
+});
+
+test("a synonym phrase mixed with another script is refused, never thrown", () => {
+  assert.doesNotThrow(() => route("baby formula 日本"));
+  const got = route("baby formula 日本");
+  if (!got || got.tool !== "refuse") assert.fail("expected a refusal route");
+  assert.match(got.args.message, /English letters/);
+});
+
 test("caps long input and survives hostile text", () => {
   assert.doesNotThrow(() => route("x".repeat(10_000)));
   assert.doesNotThrow(() => route("<script>alert(1)</script> recall"));

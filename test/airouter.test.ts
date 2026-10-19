@@ -37,6 +37,30 @@ test("a vehicle kind with no make or model asks for the year, make and model", a
   assert.deepEqual(route, { tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } });
 });
 
+test("a bare year with an empty pending vehicle asks for the vehicle again", async () => {
+  const { route, by } = await aiRoute(noModel, "2018", { make: "", model: "" });
+  assert.equal(by, "rules");
+  assert.deepEqual(route, { tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } });
+});
+
+test("a bare model with an empty pending vehicle asks for the vehicle again", async () => {
+  const { route, by } = await aiRoute(noModel, "Camry", { make: "", model: "" });
+  assert.equal(by, "rules");
+  assert.deepEqual(route, { tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } });
+});
+
+test("a full vehicle answer completes an empty pending vehicle", async () => {
+  const { route } = await aiRoute(noModel, "2018 honda accord", { make: "", model: "" });
+  assert.deepEqual(route, { tool: "check_vehicle_recalls", args: { year: 2018, make: "honda", model: "accord" } });
+});
+
+test("a synonym phrase mixed with another script is refused, never thrown", async () => {
+  const { route, by } = await aiRoute(noModel, "baby formula 日本", null);
+  assert.equal(by, "rules");
+  if (!route || route.tool !== "refuse") assert.fail("expected a refusal route");
+  assert.match(route.args.message, /English letters/);
+});
+
 test("model output is validated strictly", () => {
   assert.equal(validate({ tool: "check_vehicle_recalls", args: { year: 1800, make: "ford", model: "t" } }), null);
   assert.equal(validate({ tool: "delete_everything", args: {} }), null);

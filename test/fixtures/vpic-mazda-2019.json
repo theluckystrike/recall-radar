@@ -1,0 +1,9 @@
+{
+  "Count": 2,
+  "Message": "Response returned successfully",
+  "SearchCriteria": "Make:mazda | ModelYear:2019",
+  "Results": [
+    { "Make_ID": 480, "Make_Name": "MAZDA", "Model_ID": 2601, "Model_Name": "Mazda3" },
+    { "Make_ID": 480, "Make_Name": "MAZDA", "Model_ID": 2602, "Model_Name": "CX-5" }
+  ]
+}

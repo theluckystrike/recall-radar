@@ -10,7 +10,8 @@ export type RouteResult =
   | { tool: "add_to_watch_list"; args: { year: number; make: string; model: string } | { item: string } }
   | { tool: "remove_from_watch_list"; args: { item: string } }
   | { tool: "check_my_watch_list"; args: Record<string, never> }
-  | { tool: "more"; args: Record<string, never> };
+  | { tool: "more"; args: Record<string, never> }
+  | { tool: "refuse"; args: { message: string } };
 
 /** Spoken alias -> NHTSA make name. Longest aliases are matched first. */
 export const MAKES: Record<string, string> = {
@@ -90,6 +91,13 @@ const MODEL_MAKE: Record<string, string> = {
 const VEHICLE_NOUNS = new Set(["car", "cars", "truck", "trucks", "suv", "suvs", "van", "vans", "minivan", "minivans", "motorcycle",
   "motorcycles", "motorbike", "motorbikes", "automobile", "automobiles", "vehicle", "vehicles", "sedan", "sedans", "coupe", "coupes",
   "convertible", "convertibles", "pickup", "pickups", "hatchback", "hatchbacks", "wagon", "wagons"]);
+
+/**
+ * The kinds that clearly mean a vehicle. "wagon", "pickup" and "convertible" also name products
+ * (a Radio Flyer wagon, a pickup truck toy), so they only ask the vehicle question next to one of
+ * these words. Without one they stay a product search.
+ */
+const VEHICLE_CONTEXT = new Set(["car", "cars", "truck", "trucks", "suv", "suvs", "van", "vans", "vehicle", "vehicles"]);
 
 /** Words that mark a thing as a product even when a food word appears ("rice cooker", "apple watch"). */
 const PRODUCT_NOUNS = new Set(["watch", "spray", "cooker", "maker", "cup", "bottle", "toy", "crib", "stroller", "seat", "heater", "dresser",
@@ -239,13 +247,24 @@ export function route(utterance: string): RouteResult | null {
   const vehicle = vehicleRoute(text, words);
   if (vehicle) return vehicle;
   // "is my car recalled" names a vehicle kind but no make or model: ask for all three instead of searching products.
+  // An ambiguous noun such as "wagon", "pickup" or "convertible" needs a context word (car, truck, suv, van, vehicle).
   const kinds = itemQuery(words).split(" ").filter(Boolean);
-  if (kinds.length > 0 && kinds.every((word) => VEHICLE_NOUNS.has(word))) {
+  if (kinds.length > 0 && kinds.every((word) => VEHICLE_NOUNS.has(word)) && kinds.some((word) => VEHICLE_CONTEXT.has(word))) {
     return { tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } };
   }
   for (const [phrase, kind, target] of PHRASES) {
     // An unchanged phrase is already the canonical search form ("cough syrup"); a synonym keeps the other words ("Similac baby formula").
-    if (` ${text} `.includes(` ${phrase} `)) return { tool: kind === "drug" ? "search_drug_recalls" : "search_food_recalls", args: { query: target === phrase ? phrase : synonymQuery(text) } };
+    if (` ${text} `.includes(` ${phrase} `)) {
+      let query: string;
+      try {
+        query = target === phrase ? phrase : synonymQuery(text);
+      } catch (error) {
+        // A synonym phrase mixed with a non-Latin script cannot be read as an item: refuse it here instead of throwing out of the route.
+        if (error instanceof RangeError) return { tool: "refuse", args: { message: error.message } };
+        throw error;
+      }
+      return { tool: kind === "drug" ? "search_drug_recalls" : "search_food_recalls", args: { query } };
+    }
   }
   const query = itemQuery(words);
   if (!query) return null;

@@ -496,6 +496,17 @@
     return routeText(text).then(function (routeResult) {
       if (routeResult && routeResult.tool === "more") { readMore(); return null; }
       if (routeResult && routeResult.tool === "ask_vehicle") { askVehicle(routeResult.args); return null; }
+      if (routeResult && routeResult.tool === "refuse") {
+        var refusal = routeResult.args && routeResult.args.message
+          ? routeResult.args.message
+          : "I need an item in English letters.";
+        pendingVehicle = null;
+        addLog("route (refused)");
+        setTranscript(refusal);
+        setRing("speaking");
+        if (!speak(refusal)) setTimeout(resetSpeakingRing, 1500);
+        return null;
+      }
       pendingVehicle = null;
       if (routeResult) addLog("route (" + (routeResult.by === "model" ? "language model" : "rules") + "): " + routeResult.tool);
       if (!routeResult) {

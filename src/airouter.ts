@@ -89,12 +89,34 @@ function parseJson(text: string): unknown {
 
 export async function aiRoute(env: AiEnv, utterance: string, pending: Pending | null): Promise<{ route: RouteResult | null; by: "model" | "rules" }> {
   // Rules fallback: only a bare answer to the pending question ("2018", "the 2018 one", "accord") completes it.
-  const fallback = () => {
-    if (/^\s*(never ?mind|cancel|stop|forget it|no thanks|nothing)\W*$/i.test(utterance)) return { route: null, by: "rules" as const };
-    const bare = pending && utterance.trim().split(/\s+/).length <= 3 && !/recall/i.test(utterance);
-    const year = /\b(19[5-9]\d|20[0-4]\d)\b/.exec(utterance)?.[1];
-    const text = bare && pending ? (pending.model ? (year ? `${year} ${pending.make} ${pending.model}` : utterance) : `${year ?? ""} ${pending.make} ${utterance}`.trim()) : utterance;
-    return { route: route(text), by: "rules" as const };
+  // Every return is guarded, so a route that cannot read the item never throws out of the route endpoint.
+  const fallback = (): { route: RouteResult | null; by: "rules" } => {
+    try {
+      if (/^\s*(never ?mind|cancel|stop|forget it|no thanks|nothing)\W*$/i.test(utterance)) return { route: null, by: "rules" };
+      // The assistant asked for the whole vehicle (no make and no model). Only an answer that names a
+      // make or a known model with a year completes it; anything else asks for the vehicle again.
+      if (pending && !pending.make) {
+        const direct = route(utterance);
+        if (direct && direct.tool === "check_vehicle_recalls") return { route: direct, by: "rules" };
+        return { route: { tool: "ask_vehicle", args: { make: "", model: "", missing: "vehicle" } }, by: "rules" };
+      }
+      const bare = pending && utterance.trim().split(/\s+/).length <= 3 && !/recall/i.test(utterance);
+      const year = /\b(19[5-9]\d|20[0-4]\d)\b/.exec(utterance)?.[1];
+      let text = utterance;
+      if (bare && pending) {
+        if (pending.model) {
+          text = year ? `${year} ${pending.make} ${pending.model}` : utterance;
+        } else {
+          // Prepend the year once and drop it from the reply, so the year is never said twice.
+          const rest = (year ? utterance.replace(year, " ") : utterance).replace(/\s+/g, " ").trim();
+          text = `${year ? `${year} ` : ""}${pending.make} ${rest}`.trim();
+        }
+      }
+      return { route: route(text), by: "rules" };
+    } catch (error) {
+      if (error instanceof RangeError) return { route: { tool: "refuse", args: { message: error.message } }, by: "rules" };
+      return { route: null, by: "rules" };
+    }
   };
   if (!env.AI || !(await takeCall(env))) return fallback();
   const context = pending ? `The assistant just asked for the ${pending.model ? "model year" : "model"} of the person's ${pending.make} ${pending.model}. If the reply gives it, call check_vehicle_recalls.` : "No open question.";

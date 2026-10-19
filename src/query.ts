@@ -18,7 +18,7 @@ export function stripAccents(text: string): string {
  */
 const PHRASE_SYNONYMS: Array<[string, string]> = [["baby formula", "infant formula"]];
 
-const REFUSAL = "I need an item in English letters, for example ibuprofen.";
+export const REFUSAL = "I need an item in English letters, for example ibuprofen.";
 
 export function cleanItem(query: string): string {
   const plain = stripAccents(query).toLowerCase();
