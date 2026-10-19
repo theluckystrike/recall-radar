@@ -838,6 +838,37 @@ test("a saved vehicle uses the vPIC spelling for C300, CX-5 and F-150", async ()
   }
 });
 
+test("a watched RX counts RX350 and RX450h recalls as the same car", async () => {
+  const env = watchEnv();
+  await addWatchItem(env, "user", { year: 2019, make: "lexus", model: "rx" }, async () => ({ status: "known", model: "RX" }));
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "RX" }, { Model_Name: "RX350" }, { Model_Name: "RX450h" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    if (/model=RX350(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 3, results: ["RX350-1", "RX350-2", "RX350-3"].map((id) => ({ NHTSACampaignNumber: id, ReportReceivedDate: "01/02/2021", Component: "BRAKES", Consequence: "The part may fail.", Remedy: "Dealers will replace it." })) }), { status: 200 });
+    }
+    if (/model=RX450h(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [{ NHTSACampaignNumber: "RX450H-1", ReportReceivedDate: "02/02/2021", Component: "AIR BAGS", Consequence: "The air bag may fail.", Remedy: "Dealers will replace it." }] }), { status: 200 });
+    }
+    if (/model=RX(?:&|$)/i.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [{ NHTSACampaignNumber: "RX-1", ReportReceivedDate: "03/02/2021", Component: "ENGINE", Consequence: "The engine may stall.", Remedy: "Dealers will replace it." }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const check = await checkWatchList(env, "user");
+    assert.equal(check.newItems, 1, "the RX family is one saved car");
+    assert.equal(check.recalls.length, 5, "the direct RX recall and the numbered RX recalls are all the RX's");
+    assert.deepEqual(check.recalls.map((recall) => recall.id).sort(), ["RX-1", "RX350-1", "RX350-2", "RX350-3", "RX450H-1"]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("the watch check never reports a related model's recall as the saved car's recall", async () => {
   const env = watchEnv();
   await addWatchItem(env, "user", { year: 2021, make: "toyota", model: "corolla" }, async () => ({ status: "known", model: "Corolla" }));

@@ -656,6 +656,39 @@ test("a 2019 GLC counts recalls filed only under the spaced model name GLC 300",
   assert.doesNotMatch(out, /Glc-Class/, out);
 });
 
+test("RX350, RX350L and RX450h recalls count as the RX family and are named as filed under", async () => {
+  const urls: string[] = [];
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("vpic.nhtsa.dot.gov")) {
+      return new Response(JSON.stringify({ Results: [{ Model_Name: "RX" }, { Model_Name: "RX350" }, { Model_Name: "RX350L" }, { Model_Name: "RX450h" }] }), { status: 200 });
+    }
+    if (url.includes("/products/vehicle/models")) {
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    if (/model=RX350(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 3, results: [recallRecord("RX350-1"), recallRecord("RX350-2"), recallRecord("RX350-3")] }), { status: 200 });
+    }
+    if (/model=RX450h(?:&|$)/.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [recallRecord("RX450H-1")] }), { status: 200 });
+    }
+    if (/model=RX(?:&|$)/i.test(url)) {
+      return new Response(JSON.stringify({ Count: 1, results: [{ ...recallRecord("RX-1"), Model: "RX" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ Count: 0, results: [] }), { status: 200 });
+  };
+
+  const result = await searchVehicle("lexus", "rx", 2019, fetchFn);
+
+  assert.equal(result.total, 5, "the direct RX recall and the numbered RX versions are the same car");
+  assert.deepEqual(result.recalls.map((r) => r.id).sort(), ["RX-1", "RX350-1", "RX350-2", "RX350-3", "RX450H-1"]);
+  assert.equal(result.query, "2019 Lexus RX");
+  assert.ok(urls.some((u) => /model=RX350L(?:&|$)/.test(u)), "RX350L was searched too");
+  const out = speak(result);
+  assert.match(out, /filed under RX350 and RX450h/, out);
+});
+
 test("a model the speaker or NHTSA writes in capitals keeps them (2021 Lexus RX)", async () => {
   const body = {
     Count: 1,
@@ -725,6 +758,37 @@ test("more prefix models than the cap end the question with or another model, ne
       assert.equal(error.truncated, true);
       assert.equal(error.options.length, 5, "the question names at most the cap of five");
       assert.match(error.message, / or another model\?$/, error.message);
+      return true;
+    }
+  );
+});
+
+test("a spoken 3 Series asks which numbered vPIC model instead of refusing", async () => {
+  const fetchFn = routedFetch([
+    ["vpic.nhtsa.dot.gov", vpic({ Results: [{ Model_Name: "320i" }, { Model_Name: "330i" }, { Model_Name: "340i" }, { Model_Name: "M3" }, { Model_Name: "X3" }] })],
+    ["api.nhtsa.gov", nhtsa(400)],
+  ]);
+  await assert.rejects(
+    () => searchVehicle("bmw", "3 series", 2018, fetchFn),
+    (error: unknown) => {
+      assert.ok(isAmbiguousVehicleError(error));
+      assert.equal(error.message, "Which one, 320i, 330i, 340i or another model?");
+      return true;
+    }
+  );
+});
+
+test("a series question caps the numbered choices and offers another model", async () => {
+  const fetchFn = routedFetch([
+    ["vpic.nhtsa.dot.gov", vpic({ Results: ["320i", "325i", "328i", "330i", "335i", "340i"].map((name) => ({ Model_Name: name })) })],
+    ["api.nhtsa.gov", nhtsa(400)],
+  ]);
+  await assert.rejects(
+    () => searchVehicle("bmw", "3 series", 2018, fetchFn),
+    (error: unknown) => {
+      assert.ok(isAmbiguousVehicleError(error));
+      assert.equal(error.options.length, 5, "the question names at most the cap of five");
+      assert.equal(error.message, "Which one, 320i, 325i, 328i, 330i, 335i or another model?");
       return true;
     }
   );

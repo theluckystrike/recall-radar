@@ -18,6 +18,7 @@ const cases: Array<[string, string, Record<string, unknown> | null]> = [
   ["is there a recall on my 2020 tesla model 3", "check_vehicle_recalls", { year: 2020, make: "tesla", model: "model 3" }],
   ["any recalls on my 2021 ram 1500", "check_vehicle_recalls", { year: 2021, make: "ram", model: "1500" }],
   ["check my 2019 mazda 3", "check_vehicle_recalls", { year: 2019, make: "mazda", model: "3" }],
+  ["is my 2018 bmw 3 series recalled", "check_vehicle_recalls", { year: 2018, make: "bmw", model: "3 series" }],
   ["is my 2019 mercedes benz c300 recalled", "check_vehicle_recalls", { year: 2019, make: "mercedes-benz", model: "c300" }],
   ["is my 2019 mercedes-benz c300 recalled", "check_vehicle_recalls", { year: 2019, make: "mercedes-benz", model: "c300" }],
   ["any recalls on my 2016 land rover range rover", "check_vehicle_recalls", { year: 2016, make: "land rover", model: "range rover" }],

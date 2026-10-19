@@ -167,6 +167,27 @@ function modelLookup(names: string[], make: string, model: string): ModelLookup 
   if (exact) return { match: exact, options: [], truncated: false };
   const prefixed = names.find((name) => makeKey && modelKey(name) === `${makeKey}${wanted}`);
   if (prefixed) return { match: prefixed, options: [], truncated: false };
+  // "3 Series" is how a person says a BMW family, but vPIC lists the numbered cars (320i, 330i, 340i).
+  // The choices always end with another model, since a series has trims the list may not name.
+  const seriesDigit = /^([1-9])\s*series$/.exec(model.trim().toLowerCase())?.[1];
+  if (seriesDigit) {
+    const seen = new Set<string>();
+    const numbered = names.filter((name) => {
+      const key = modelKey(name);
+      if (seen.has(key)) return false;
+      if (!new RegExp(`^${seriesDigit}\\d{2}[a-z]*$`).test(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (numbered.length > 0) {
+      const sorted = numbered.sort((a, b) => naturalOrder.compare(a, b));
+      return {
+        match: null,
+        options: sorted.slice(0, MAX_MODEL_OPTIONS),
+        truncated: true,
+      };
+    }
+  }
   // A prefix match counts only when exactly one vPIC model fits, so "Model" never stands for "Model S".
   const prefix: string[] = [];
   const seen = new Set<string>();
@@ -597,6 +618,17 @@ function isNumberedClassModel(name: string, mergeKeys: Set<string>): boolean {
 }
 
 /**
+ * RX350, RX350L and RX450h are the numbered versions of an RX, so they are the same car. The family key
+ * must be followed directly by digits and optional letters. A name that adds a separate word, such as
+ * Corolla Cross or F-150 Lightning, is a different vehicle and is never merged.
+ */
+function isNumberedFamilyModel(name: string, familyKey: string): boolean {
+  const key = modelKey(name);
+  if (!key.startsWith(familyKey)) return false;
+  return /^\d+[a-z]*$/.test(key.slice(familyKey.length));
+}
+
+/**
  * Search the models listed under a family name (RX gives RX 350, RX 350L and so on). A "-Class"
  * family also tries the numbered models NHTSA really files it under (C300, C450, ...), which neither
  * list names. Only the numbered "-Class" models are the same car sold under a number, so only their
@@ -672,7 +704,9 @@ async function searchRelatedModels(
     }
     const found = result.value.recalls;
     if (found.length === 0) continue;
-    if (isNumberedClassModel(result.value.model, mergeKeys)) {
+    const sameCar = isNumberedClassModel(result.value.model, mergeKeys)
+      || isNumberedFamilyModel(result.value.model, key);
+    if (sameCar) {
       let added = 0;
       for (const recall of found) {
         if (seen.has(recall.id)) continue;
@@ -717,11 +751,44 @@ export async function searchVehicle(
   const first = await fetchRecalls(make, model, year, doFetch);
 
   if (first.raw.length > 0) {
+    const direct = toRecalls(first.raw, make, model, year).sort(byRecency);
+    const shown = displayModelName(model, agencyModel(first.raw));
+    const query = `${year} ${titleCase(make)} ${shown}`;
+    // A family can have a recall of its own while its numbered versions have more (RX and RX350).
+    // Only a short direct list needs the family search; a full five already fills the spoken answer.
+    if (first.total < MAX_RESULTS) {
+      const family = await searchRelatedModels(make, model, year, doFetch).catch(() => null);
+      if (family && family.recalls.length > 0) {
+        const merged: Recall[] = [];
+        const seen = new Set<string>();
+        for (const recall of [...direct, ...family.recalls]) {
+          if (seen.has(recall.id)) continue;
+          seen.add(recall.id);
+          merged.push(recall);
+        }
+        merged.sort(byRecency);
+        const result: SearchResult = {
+          query,
+          source: "nhtsa",
+          total: merged.length,
+          recalls: merged.slice(0, MAX_RESULTS),
+        };
+        vehicleNotes.set(result, {
+          model: shown,
+          relatedModels: family.related,
+          searchedModels: family.searched,
+          filedUnder: family.filedUnder,
+          relatedRecalls: family.relatedRecalls,
+          example: hintExample(family.related, family.searched, model),
+        });
+        return result;
+      }
+    }
     return {
-      query: `${year} ${titleCase(make)} ${displayModelName(model, agencyModel(first.raw))}`,
+      query,
       source: "nhtsa",
       total: first.total,
-      recalls: toRecalls(first.raw, make, model, year).sort(byRecency).slice(0, MAX_RESULTS),
+      recalls: direct.slice(0, MAX_RESULTS),
     };
   }
 
