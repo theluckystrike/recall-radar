@@ -408,6 +408,21 @@ test("a make-prefixed vPIC name is accepted (Mazda3 for make mazda, model 3)", a
   assert.equal(result.query, "2019 Mazda 3");
 });
 
+test("a make-prefixed model is searched again under the vPIC name before saying nothing is listed", async () => {
+  const seen: string[] = [];
+  const fetchFn: FetchFn = async (input) => {
+    const url = String(input);
+    seen.push(url);
+    if (url.includes("vpic.nhtsa.dot.gov")) return vpic(mazdaVpic)();
+    if (url.includes("api.nhtsa.gov") && /model=Mazda3/i.test(url)) return nhtsa(200, fixture)();
+    return nhtsa(400)();
+  };
+  const result = await searchVehicle("mazda", "3", 2019, fetchFn);
+  assert.ok(result.total > 0, "recalls filed under Mazda3 are found for the spoken model 3");
+  assert.equal(result.query, "2019 Mazda 3");
+  assert.ok(seen.some((u) => /model=Mazda3/i.test(u)), "NHTSA was asked again with the vPIC name");
+});
+
 test("a vPIC name that adds a trim still matches the wanted model", async () => {
   const result = await searchVehicle(
     "chevrolet",

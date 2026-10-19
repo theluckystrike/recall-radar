@@ -82,17 +82,19 @@ function vpicCacheFor(fetchFn: FetchFn): Map<string, VpicCacheEntry> {
  * wanted key ("Mazda3" for make mazda and model 3), or when one key is a prefix of the other so a
  * name that adds or drops a trim ("Camry Hybrid", "Corolla Cross") still matches.
  */
-function modelMatches(names: string[], make: string, model: string): boolean {
+/** The vPIC model name that matches the spoken model, or null. Exact keys win over prefix matches. */
+function modelMatch(names: string[], make: string, model: string): string | null {
   const wanted = modelKey(model);
-  if (!wanted) return false;
+  if (!wanted) return null;
   const makeKey = modelKey(make);
-  return names.some((name) => {
+  const exact = names.find((name) => modelKey(name) === wanted);
+  if (exact) return exact;
+  const prefixed = names.find((name) => makeKey && modelKey(name) === `${makeKey}${wanted}`);
+  if (prefixed) return prefixed;
+  return names.find((name) => {
     const key = modelKey(name);
-    if (!key) return false;
-    if (key === wanted) return true;
-    if (makeKey && key === `${makeKey}${wanted}`) return true;
     return key.length >= 3 && wanted.length >= 3 && (key.startsWith(wanted) || wanted.startsWith(key));
-  });
+  }) ?? null;
 }
 
 function maxAllowedYear(): number {
@@ -274,9 +276,10 @@ async function confirmModel(
   model: string,
   year: number,
   fetchFn: FetchFn
-): Promise<void> {
+): Promise<string> {
   const names = await requestVpicModels(make, year, fetchFn);
-  if (modelMatches(names, make, model)) return;
+  const match = modelMatch(names, make, model);
+  if (match) return match;
   throw new SourceError(`${UNKNOWN_VEHICLE}: ${make} ${model} ${year}`);
 }
 
@@ -284,7 +287,8 @@ export async function searchVehicle(
   make: string,
   model: string,
   year: number,
-  fetchFn?: FetchFn
+  fetchFn?: FetchFn,
+  canonicalRetry = true
 ): Promise<SearchResult> {
   validateYear(year);
 
@@ -304,7 +308,13 @@ export async function searchVehicle(
   const raw: unknown[] = data && Array.isArray(data.results) ? (data.results as unknown[]) : [];
 
   if (raw.length === 0) {
-    await confirmModel(make, model, year, doFetch);
+    const match = await confirmModel(make, model, year, doFetch);
+    // NHTSA files recalls under the vPIC model name, so "3" for Mazda must be searched again as "Mazda3"
+    // before the answer can say that nothing is listed.
+    if (canonicalRetry && modelKey(match) !== modelKey(model)) {
+      const again = await searchVehicle(make, match, year, doFetch, false);
+      if (again.total > 0) return { ...again, query: `${year} ${titleCase(make)} ${titleCase(model)}` };
+    }
     return {
       query: `${year} ${titleCase(make)} ${titleCase(model)}`,
       source: "nhtsa",
